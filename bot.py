@@ -18,7 +18,7 @@ def send_telegram_msg(message):
     except Exception as e:
         print(f"Telegram error: {e}", flush=True)
 
-# ----------------- 2. WEB SERVER -----------------
+# ----------------- 2. WEB SERVER (FOR KEEP-ALIVE) -----------------
 app = Flask(__name__)
 
 @app.route('/')
@@ -38,7 +38,7 @@ api_lock = threading.Lock()
 ACCOUNT_SIZE_USD = 2500.0
 RISK_PER_TRADE_USD = 25.0       # 1% Risk per trade ($25)
 MAX_DAILY_LOSS_USD = 50.0       # $50 Max Daily Loss Circuit Breaker
-MAX_CONCURRENT_TRADES = 2       # अधिकतम 2 ट्रेड्स एक साथ
+MAX_CONCURRENT_TRADES = 2       # अधिकतम 2 ट्रेड्स एक साथ खुले रह सकते हैं
 
 risk_guard = {
     'current_date': "",
@@ -122,15 +122,15 @@ FOREX_ASSETS = {
         'last_daily_fetch': "",
         'last_4h_fetch': 0
     },
-    'GBPJPY': {
-        'symbol': 'GBP/JPY',
-        'tag': '🐉 GBP/JPY',
-        'pip_size': 0.01,
-        'sl_buffer': 0.10,        # 10 pips buffer
-        'min_allowed_sl': 0.30,   # 30 pips minimum safe SL floor
-        'max_allowed_sl': 0.70,   # 70 pips max SL
-        'min_gap': 0.25,          # 25 pips gap required
-        'min_swing_depth': 0.70,  # 70 pips swing depth
+    'USDCAD': {
+        'symbol': 'USD/CAD',
+        'tag': '🍁 USD/CAD',
+        'pip_size': 0.0001,
+        'sl_buffer': 0.0006,      # 6 pips buffer
+        'min_allowed_sl': 0.0015, # 15 pips minimum safe SL floor
+        'max_allowed_sl': 0.0035, # 35 pips max SL
+        'min_gap': 0.0012,        # 12 pips gap required
+        'min_swing_depth': 0.0035,# 35 pips swing depth
         'active_trade': None,
         'last_candle_time': None,
         'cached_pdh': None,
@@ -557,9 +557,9 @@ def run_forex_bot():
     print("Forex Master 2-Trade Mode Bot Active...", flush=True)
     send_telegram_msg(
         "🚀 *Forex Master Shield Bot Online (Max 2 Trades Active)!*\n"
-        "• Tracking: EUR/USD, GBP/USD, USD/JPY, GBP/JPY\n"
+        "• Tracking: EUR/USD, GBP/USD, USD/JPY, USD/CAD\n"
         "• Concurrency: Max 2 Active Trades across account\n"
-        "• Safe SL Floor: EUR (15p) | GBP (18p) | JPY (25p-30p)\n"
+        "• Safe SL Floor: EUR (15p) | GBP (18p) | JPY (25p) | CAD (15p)\n"
         "• Monday Gap-Fill: Strictly Locked to Mon 3:30 AM - 7:30 AM IST\n"
         "• Circuit Breaker: Strict $50 Daily Stop Loss Protection."
     )
@@ -568,7 +568,7 @@ def run_forex_bot():
         try:
             check_and_send_daily_summary()
 
-            for asset_name in ['EURUSD', 'GBPUSD', 'USDJPY', 'GBPJPY']:
+            for asset_name in ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCAD']:
                 process_forex_asset(asset_name)
                 time.sleep(2)
             time.sleep(25)
