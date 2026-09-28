@@ -18,12 +18,12 @@ def send_telegram_msg(message):
     except Exception as e:
         print(f"Telegram error: {e}", flush=True)
 
-# ----------------- 2. WEB SERVER (FOR KEEP-ALIVE) -----------------
+# ----------------- 2. WEB SERVER -----------------
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Forex Master 4-Pair Bot (Max 2 Open Trades Mode) Running 24/5!"
+    return "Forex Master Strict Sniper Bot Running 24/5!"
 
 def start_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -36,9 +36,9 @@ exchange = ccxt.kraken({
 api_lock = threading.Lock()
 
 ACCOUNT_SIZE_USD = 2500.0
-RISK_PER_TRADE_USD = 25.0       # 1% Risk per trade ($25)
-MAX_DAILY_LOSS_USD = 50.0       # $50 Max Daily Loss Circuit Breaker
-MAX_CONCURRENT_TRADES = 2       # अधिकतम 2 ट्रेड्स एक साथ खुले रह सकते हैं
+RISK_PER_TRADE_USD = 25.0       
+MAX_DAILY_LOSS_USD = 50.0       
+MAX_CONCURRENT_TRADES = 2       
 
 risk_guard = {
     'current_date': "",
@@ -51,11 +51,11 @@ FOREX_ASSETS = {
         'symbol': 'EUR/USD',
         'tag': '💶 EUR/USD',
         'pip_size': 0.0001,
-        'sl_buffer': 0.0006,      # 6 pips buffer
-        'min_allowed_sl': 0.0015, # 15 pips minimum safe SL floor
-        'max_allowed_sl': 0.0035, # 35 pips max SL
-        'min_gap': 0.0012,        # 12 pips gap required
-        'min_swing_depth': 0.0035,# 35 pips swing depth
+        'sl_buffer': 0.0006,      
+        'min_allowed_sl': 0.0015, 
+        'max_allowed_sl': 0.0035, 
+        'min_gap': 0.0012,        
+        'min_swing_depth': 0.0035,
         'active_trade': None,
         'last_candle_time': None,
         'cached_pdh': None,
@@ -76,11 +76,11 @@ FOREX_ASSETS = {
         'symbol': 'GBP/USD',
         'tag': '💷 GBP/USD',
         'pip_size': 0.0001,
-        'sl_buffer': 0.0007,      # 7 pips buffer
-        'min_allowed_sl': 0.0018, # 18 pips minimum safe SL floor
-        'max_allowed_sl': 0.0040, # 40 pips max SL
-        'min_gap': 0.0015,        # 15 pips gap required
-        'min_swing_depth': 0.0045,# 45 pips swing depth
+        'sl_buffer': 0.0007,      
+        'min_allowed_sl': 0.0018, 
+        'max_allowed_sl': 0.0040, 
+        'min_gap': 0.0015,        
+        'min_swing_depth': 0.0045,
         'active_trade': None,
         'last_candle_time': None,
         'cached_pdh': None,
@@ -101,11 +101,11 @@ FOREX_ASSETS = {
         'symbol': 'USD/JPY',
         'tag': '💴 USD/JPY',
         'pip_size': 0.01,
-        'sl_buffer': 0.08,        # 8 pips buffer
-        'min_allowed_sl': 0.25,   # 25 pips minimum safe SL floor
-        'max_allowed_sl': 0.55,   # 55 pips max SL
-        'min_gap': 0.20,          # 20 pips gap required
-        'min_swing_depth': 0.55,  # 55 pips swing depth
+        'sl_buffer': 0.08,        
+        'min_allowed_sl': 0.25,   
+        'max_allowed_sl': 0.55,   
+        'min_gap': 0.20,          
+        'min_swing_depth': 0.55,  
         'active_trade': None,
         'last_candle_time': None,
         'cached_pdh': None,
@@ -126,11 +126,11 @@ FOREX_ASSETS = {
         'symbol': 'USD/CAD',
         'tag': '🍁 USD/CAD',
         'pip_size': 0.0001,
-        'sl_buffer': 0.0006,      # 6 pips buffer
-        'min_allowed_sl': 0.0015, # 15 pips minimum safe SL floor
-        'max_allowed_sl': 0.0035, # 35 pips max SL
-        'min_gap': 0.0012,        # 12 pips gap required
-        'min_swing_depth': 0.0035,# 35 pips swing depth
+        'sl_buffer': 0.0006,      
+        'min_allowed_sl': 0.0015, 
+        'max_allowed_sl': 0.0035, 
+        'min_gap': 0.0012,        
+        'min_swing_depth': 0.0035,
         'active_trade': None,
         'last_candle_time': None,
         'cached_pdh': None,
@@ -165,8 +165,7 @@ performance = {
 def get_current_open_trades_count():
     count = 0
     for c in FOREX_ASSETS.values():
-        if c['active_trade'] is not None:
-            count += 1
+        if c['active_trade'] is not None: count += 1
     return count
 
 def register_trade_loss(loss_usd):
@@ -177,8 +176,7 @@ def register_trade_loss(loss_usd):
         send_telegram_msg(
             "🚨🚨 *[FOREX CIRCUIT BREAKER ACTIVATED]* 🚨🚨\n"
             f"आज का अधिकतम नुकसान (-${risk_guard['daily_loss_accumulated']:.2f}) पूरा हुआ!\n"
-            "🛡️ *ACCOUNT SAFEGUARD:* ड्रॉडाउन रोकने के लिए बॉट आज रात 12:00 AM तक पूरी तरह FREEZE रहेगा।\n"
-            "कोई भी नया ऑर्डर या एंट्री नहीं ली जाएगी।"
+            "🛡️ *ACCOUNT SAFEGUARD:* ड्रॉडाउन रोकने के लिए बॉट आज रात 12:00 AM तक पूरी तरह FREEZE रहेगा।"
         )
 
 def check_and_send_daily_summary():
@@ -196,14 +194,11 @@ def check_and_send_daily_summary():
         risk_guard['current_date'] = today_str
         risk_guard['daily_loss_accumulated'] = 0.0
         risk_guard['is_frozen_today'] = False
-        for c in FOREX_ASSETS.values():
-            c['gap_trade_done'] = False
+        for c in FOREX_ASSETS.values(): c['gap_trade_done'] = False
 
     if now_ist.hour == 23 and now_ist.minute >= 30 and not performance['daily_summary_sent']:
         win_rate = (performance['today_wins'] / performance['today_trades'] * 100) if performance['today_trades'] > 0 else 0.0
-        all_win_rate = (performance['alltime_wins'] / performance['alltime_trades'] * 100) if performance['alltime_trades'] > 0 else 0.0
         status_emoji = "🔥" if performance['today_pnl_usd'] > 0 else ("😐" if performance['today_pnl_usd'] == 0 else "🔻")
-
         summary_msg = (
             f"📋 *[FOREX END OF DAY REPORT]* {status_emoji}\n"
             f"📅 *Date:* {today_str}\n"
@@ -235,35 +230,27 @@ def get_candles(symbol, timeframe, limit=80):
 
 def find_filtered_swings(df_4h, current_price, min_depth):
     try:
-        if df_4h is None or len(df_4h) < 25:
-            return None, None
-
+        if df_4h is None or len(df_4h) < 25: return None, None
         highs = [float(x) for x in df_4h['high'].tolist()]
         lows = [float(x) for x in df_4h['low'].tolist()]
         n = len(highs)
-
         valid_swing_lows = []
         valid_swing_highs = []
-
         for i in range(2, n - 3):
             if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
                 left_low = min(lows[i-2], lows[i-1])
                 right_low = min(lows[i+1], lows[i+2])
                 if (highs[i] - left_low) >= min_depth and (highs[i] - right_low) >= min_depth:
                     valid_swing_highs.append(highs[i])
-
             if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
                 left_high = max(highs[i-2], highs[i-1])
                 right_high = max(highs[i+1], highs[i+2])
                 if (left_high - lows[i]) >= min_depth and (right_high - lows[i]) >= min_depth:
                     valid_swing_lows.append(lows[i])
-
         below_current_lows = [l for l in valid_swing_lows if l < current_price]
         target_low = max(below_current_lows) if len(below_current_lows) > 0 else (min(valid_swing_lows) if len(valid_swing_lows) > 0 else min(lows[-30:-3]))
-
         above_current_highs = [h for h in valid_swing_highs if h > current_price]
         target_high = min(above_current_highs) if len(above_current_highs) > 0 else (max(valid_swing_highs) if len(valid_swing_highs) > 0 else max(highs[-30:-3]))
-
         return target_high, target_low
     except Exception as e:
         print(f"Swing calc error: {e}", flush=True)
@@ -275,14 +262,20 @@ def update_daily_and_swings(name, current_price):
     today_str = now_ist.strftime("%Y-%m-%d")
 
     if conf['last_daily_fetch'] != today_str or conf['cached_pdh'] is None:
+        # 1D कैंडल लें, लेकिन संडे कैंडल को इग्नोर करने के लिए 1D के बजाय 4H का डेटा इस्तेमाल कर सकते हैं
+        # या Kraken के 1D डेटा में से वीकेंड कैंडल को फ़िल्टर करें
         df_daily = get_candles(conf['symbol'], '1d', limit=10)
         if df_daily is not None and len(df_daily) >= 3:
+            # संडे कैंडल से बचने के लिए, अगर क्लोजिंग टाइम संडे का है तो उससे पिछली कैंडल लें
             prev_day = df_daily.iloc[-2]
+            ts = pd.to_datetime(prev_day['timestamp'], unit='ms')
+            if ts.weekday() == 6: # Sunday
+                prev_day = df_daily.iloc[-3] # Friday
+
             conf['cached_pdh'] = float(prev_day['high'])
             conf['cached_pdl'] = float(prev_day['low'])
             conf['cached_prev_close'] = float(prev_day['close'])
             conf['last_daily_fetch'] = today_str
-            print(f"[{name} DAILY CACHED] PDH: {conf['cached_pdh']:.5f} | PDL: {conf['cached_pdl']:.5f} | PrevClose: {conf['cached_prev_close']:.5f}", flush=True)
 
     now_ts = time.time()
     if (now_ts - conf['last_4h_fetch']) > 3600 or conf['true_swing_high'] is None:
@@ -292,36 +285,26 @@ def update_daily_and_swings(name, current_price):
             conf['true_swing_high'] = float(s_high)
             conf['true_swing_low'] = float(s_low)
             conf['last_4h_fetch'] = now_ts
-            print(f"[{name} SWINGS] Target High: {conf['true_swing_high']:.5f} | Target Low: {conf['true_swing_low']:.5f}", flush=True)
 
 def create_forex_split_trade(side, entry, calculated_sl, conf, trade_label="STRUCTURAL 2-LOT"):
-    if get_current_open_trades_count() >= MAX_CONCURRENT_TRADES:
-        return None
-
+    if get_current_open_trades_count() >= MAX_CONCURRENT_TRADES: return None
     raw_distance = abs(entry - calculated_sl)
-    if raw_distance <= 0:
-        return None
-
+    if raw_distance <= 0: return None
     effective_distance = max(raw_distance, conf['min_allowed_sl'])
 
-    if side == 'BUY':
-        actual_sl = entry - effective_distance
-    else:
-        actual_sl = entry + effective_distance
+    if side == 'BUY': actual_sl = entry - effective_distance
+    else: actual_sl = entry + effective_distance
 
     if effective_distance > conf['max_allowed_sl']:
         send_telegram_msg(
             f"⚠️ *[{conf['tag']} TRADE SKIPPED - SL TOO LARGE]*\n"
-            f"SL Distance: {effective_distance / conf['pip_size']:.1f} Pips (Max allowed: {conf['max_allowed_sl'] / conf['pip_size']:.1f} Pips)\n"
-            "🛡️ 1:5 RR अनुपात सुरक्षित रखने के लिए बड़ा कैंडल छोड़ दिया गया।"
+            f"SL Distance: {effective_distance / conf['pip_size']:.1f} Pips (Max: {conf['max_allowed_sl'] / conf['pip_size']:.1f} Pips)"
         )
         return None
 
     pips = effective_distance / conf['pip_size']
     calculated_lots = round(RISK_PER_TRADE_USD / (pips * 10.0), 2)
-    if calculated_lots < 0.02:
-        calculated_lots = 0.02
-
+    if calculated_lots < 0.02: calculated_lots = 0.02
     lot1 = round(calculated_lots / 2, 2)
     lot2 = round(calculated_lots - lot1, 2)
 
@@ -359,8 +342,8 @@ def create_forex_split_trade(side, entry, calculated_sl, conf, trade_label="STRU
         f"💼 *Total Lots ($2500 Acct):* {calculated_lots} Lots\n"
         f"   • *Lot 1:* {lot1} Lots (TP1 Partial + BE)\n"
         f"   • *Lot 2:* {lot2} Lots (TP2 Runner Target)\n"
-        f"🎯 *TP1 Target:* {tp1:.5f} (Locks Partial + Move SL to Entry)\n"
-        f"🏆 *TP2 Target:* {tp2:.5f} (Full Expansion)\n"
+        f"🎯 *TP1 Target:* {tp1:.5f}\n"
+        f"🏆 *TP2 Target:* {tp2:.5f}\n"
         f"🔒 *Max Risk:* $25.00 (1.0%)\n"
         f"📊 *Open Trades:* {get_current_open_trades_count() + 1}/{MAX_CONCURRENT_TRADES}\n"
         f"-----------------------------"
@@ -372,12 +355,10 @@ def process_forex_asset(name):
 
     now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     weekday = now_ist.weekday()
-    if weekday == 5 or (weekday == 6 and now_ist.hour < 23):
-        return
+    if weekday == 5 or (weekday == 6 and now_ist.hour < 23): return
 
     df_15m = get_candles(conf['symbol'], '15m', limit=35)
-    if df_15m is None or len(df_15m) < 10:
-        return
+    if df_15m is None or len(df_15m) < 10: return
 
     last_closed = df_15m.iloc[-2]
     prev_closed = df_15m.iloc[-3]
@@ -430,8 +411,7 @@ def process_forex_asset(name):
                     f"💰 *[{conf['tag']} TP1 HIT - 50% PARTIAL BOOKED]* 🎯\n"
                     f"✅ *Lot 1 Closed:* {trade['lot1_size']} Lots @ {current_price:.5f}\n"
                     f"💵 *Secured Profit:* +31.25 USD (+1.25R)\n"
-                    f"🛡️ *SL Moved to Entry:* {entry:.5f} (RISK-FREE!)\n"
-                    f"🏆 *Lot 2 Running for TP2:* {tp2:.5f}"
+                    f"🛡️ *SL Moved to Entry:* {entry:.5f} (RISK-FREE!)"
                 )
 
         if trade['lot1_booked']:
@@ -447,8 +427,7 @@ def process_forex_asset(name):
                 send_telegram_msg(
                     f"🏆 *[{conf['tag']} TP2 HIT - FULL TARGET ACCOMPLISHED]* 🚀\n"
                     f"✅ *Lot 2 Closed:* {trade['lot2_size']} Lots @ {current_price:.5f}\n"
-                    f"💵 *Lot 2 Profit:* +62.50 USD (+2.5R)\n"
-                    f"💰 *Total Net Trade Profit:* *+93.75 USD (+3.75R / +3.75%)*"
+                    f"💵 *Total Net Trade Profit:* *+93.75 USD (+3.75R / +3.75%)*"
                 )
                 conf['active_trade'] = None
                 return
@@ -464,7 +443,7 @@ def process_forex_asset(name):
                 conf['active_trade'] = None
                 return
 
-    # 2. 15M CANDLE CLOSE EXECUTION
+    # 2. STRICT 15M CANDLE CLOSE EXECUTION (PIERCING LOGIC ONLY)
     if candle_time != conf['last_candle_time']:
         conf['last_candle_time'] = candle_time
         c_open = float(last_closed['open'])
@@ -475,17 +454,14 @@ def process_forex_asset(name):
         p_low = float(prev_closed['low'])
         p_high = float(prev_closed['high'])
 
-        if risk_guard['is_frozen_today'] or conf['active_trade'] is not None:
-            return
-        if get_current_open_trades_count() >= MAX_CONCURRENT_TRADES:
-            return
+        if risk_guard['is_frozen_today'] or conf['active_trade'] is not None: return
+        if get_current_open_trades_count() >= MAX_CONCURRENT_TRADES: return
 
-        # A. 15M MONDAY GAP-FILL (सोमवार 3:30 AM से 7:30 AM IST)
+        # A. 15M MONDAY GAP-FILL
         prev_c = conf['cached_prev_close']
         if weekday == 0 and now_ist.hour in [3, 4, 5, 6, 7] and prev_c is not None and not conf['gap_trade_done']:
             if conf['monday_open_price'] is None:
                 conf['monday_open_price'] = float(df_15m.iloc[-10]['open'])
-
             gap_size = abs(conf['monday_open_price'] - prev_c)
             if gap_size >= conf['min_gap']:
                 if conf['monday_open_price'] < prev_c and c_close > c_open:
@@ -499,75 +475,49 @@ def process_forex_asset(name):
                     conf['gap_trade_done'] = True
                     return
 
-        # B. PDH / PDL LIQUIDITY SWEEPS
+        # B. PDH / PDL LIQUIDITY SWEEPS (STRICT PIERCE)
         pdh = conf['cached_pdh']
         pdl = conf['cached_pdl']
         if pdh and pdl and conf['active_trade'] is None and get_current_open_trades_count() < MAX_CONCURRENT_TRADES:
+            # SELL: High must pierce PDH, but close below PDH
             if c_high > pdh and c_close < pdh and c_close < c_open:
                 sl = max(c_high, p_high) + conf['sl_buffer']
-                conf['active_trade'] = create_forex_split_trade('SELL', c_close, sl, conf, trade_label="PDH SWEEP")
+                conf['active_trade'] = create_forex_split_trade('SELL', c_close, sl, conf, trade_label="PDH STRICT SWEEP")
                 return
+            # BUY: Low must pierce PDL, but close above PDL
             elif c_low < pdl and c_close > pdl and c_close > c_open:
                 sl = min(c_low, p_low) - conf['sl_buffer']
-                conf['active_trade'] = create_forex_split_trade('BUY', c_close, sl, conf, trade_label="PDL SWEEP")
+                conf['active_trade'] = create_forex_split_trade('BUY', c_close, sl, conf, trade_label="PDL STRICT SWEEP")
                 return
 
-        # C. 4H STRUCTURAL SWING SWEEPS
+        # C. 4H STRUCTURAL SWING SWEEPS (STRICT PIERCE)
         s_low = conf['true_swing_low']
         s_high = conf['true_swing_high']
         if s_low and s_high and conf['active_trade'] is None and get_current_open_trades_count() < MAX_CONCURRENT_TRADES:
-            if c_low < s_low and not conf['buy_sweep_active']:
-                conf['buy_sweep_active'] = True
-                conf['buy_sweep_lowest'] = c_low
-                send_telegram_msg(
-                    f"⚠️ *[{conf['tag']} STRUCTURAL LOW SWEEP]*\n"
-                    f"Target Low ({s_low:.5f}) swept!\n"
-                    f"Lowest Wick: {conf['buy_sweep_lowest']:.5f}"
-                )
+            # BUY: Low must pierce s_low, but close above s_low
+            if c_low < s_low and c_close > s_low and c_close > c_open and conf['active_trade'] is None:
+                sl = min(c_low, p_low) - conf['sl_buffer']
+                conf['active_trade'] = create_forex_split_trade('BUY', c_close, sl, conf, trade_label="STRUCTURAL STRICT V-BUY")
+                return
+            # SELL: High must pierce s_high, but close below s_high
+            if c_high > s_high and c_close < s_high and c_close < c_open and conf['active_trade'] is None:
+                sl = max(c_high, p_high) + conf['sl_buffer']
+                conf['active_trade'] = create_forex_split_trade('SELL', c_close, sl, conf, trade_label="STRUCTURAL STRICT PEAK SELL")
+                return
 
-            if conf['buy_sweep_active']:
-                if c_low < conf['buy_sweep_lowest']:
-                    conf['buy_sweep_lowest'] = c_low
-                if c_close > c_open and conf['active_trade'] is None:
-                    sl = min(conf['buy_sweep_lowest'], p_low) - conf['sl_buffer']
-                    conf['active_trade'] = create_forex_split_trade('BUY', c_close, sl, conf, trade_label="STRUCTURAL V-BUY")
-                    conf['buy_sweep_active'] = False
-                    return
-
-            if c_high > s_high and not conf['sell_sweep_active']:
-                conf['sell_sweep_active'] = True
-                conf['sell_sweep_highest'] = c_high
-                send_telegram_msg(
-                    f"⚠️ *[{conf['tag']} STRUCTURAL HIGH SWEEP]*\n"
-                    f"Target High ({s_high:.5f}) swept!\n"
-                    f"Highest Wick: {conf['sell_sweep_highest']:.5f}"
-                )
-
-            if conf['sell_sweep_active']:
-                if c_high > conf['sell_sweep_highest']:
-                    conf['sell_sweep_highest'] = c_high
-                if c_close < c_open and conf['active_trade'] is None:
-                    sl = max(conf['sell_sweep_highest'], p_high) + conf['sl_buffer']
-                    conf['active_trade'] = create_forex_split_trade('SELL', c_close, sl, conf, trade_label="STRUCTURAL PEAK SELL")
-                    conf['sell_sweep_active'] = False
-                    return
-
-# ----------------- 8. MAIN LOOP -----------------
 def run_forex_bot():
-    print("Forex Master 2-Trade Mode Bot Active...", flush=True)
+    print("Forex Strict Sniper Bot Active...", flush=True)
     send_telegram_msg(
-        "🚀 *Forex Master Shield Bot Online (Max 2 Trades Active)!*\n"
+        "🚀 *Forex Strict Sniper Bot Online (No Fake Sweeps)!*\n"
         "• Tracking: EUR/USD, GBP/USD, USD/JPY, USD/CAD\n"
-        "• Concurrency: Max 2 Active Trades across account\n"
-        "• Safe SL Floor: EUR (15p) | GBP (18p) | JPY (25p) | CAD (15p)\n"
-        "• Monday Gap-Fill: Strictly Locked to Mon 3:30 AM - 7:30 AM IST\n"
-        "• Circuit Breaker: Strict $50 Daily Stop Loss Protection."
+        "• Entry Logic: STRICT Piercing only (Candle must pierce level AND close on opposite side)\n"
+        "• Sunday PDL Bug: Fixed (Ignores Sunday candles)\n"
+        "• Circuit Breaker: Strict $50 Daily Protection."
     )
 
     while True:
         try:
             check_and_send_daily_summary()
-
             for asset_name in ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCAD']:
                 process_forex_asset(asset_name)
                 time.sleep(2)
