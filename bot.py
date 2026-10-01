@@ -244,48 +244,71 @@ def calculate_volume_delta_profile(df):
         return 0.0, 1.0, "NORMAL"
 
 # =====================================================================
-# 6. GEMINI AI POST-TRADE REASONER & ADVISOR
+# 6. GEMINI AI POST-TRADE REASONER & ZERO-TRADE MARKET ANALYST
 # =====================================================================
+def call_gemini(prompt_text):
+    if not GEMINI_API_KEY:
+        return None
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
+        res = requests.post(url, headers=headers, json=payload, timeout=20)
+        if res.status_code == 200:
+            data = res.json()
+            return data['candidates'][0]['content']['parts'][0]['text']
+        else:
+            print(f"Gemini API error: {res.status_code} - {res.text}", flush=True)
+            return None
+    except Exception as e:
+        print(f"Gemini connection error: {e}", flush=True)
+        return None
+
 def run_ai_trade_advisor(outcome, trade, current_price, delta_val, vol_ratio, vol_status):
-    """Gemini 2.5 Flash द्वारा वास्तविक समय ट्रेड समीक्षा एवं सलाह"""
     asset = trade['asset']
     side = trade['side']
     conf = ASSETS[asset]
 
-    if not GEMINI_API_KEY:
-        print("Gemini API key missing, skipping AI advice.", flush=True)
-        return
+    prompt = f"""
+    You are an expert algorithmic prop trading coach for a $2,500 The5ers account.
+    A trade just closed:
+    - Asset: {conf['tag']}
+    - Side: {side} | Entry: {trade['entry']} | Exit: {current_price}
+    - Outcome: {outcome}
+    - Volume Delta: {delta_val}
+    - Volume Ratio: {vol_ratio}x ({vol_status})
+    
+    Provide 3 concise bullet points in clean Hindi/Hinglish:
+    1. Volume Delta aur absorption ke context me kya entry sahi thi?
+    2. Trade ka mukhya kaaran (Liquidity grab/sweep context).
+    3. Ek practical lesson/tip taaki agla trade aur behtar ho sake.
+    Keep it strictly under 75 words.
+    """
+    ai_resp = call_gemini(prompt)
+    if ai_resp:
+        send_telegram_msg(f"🧠 *[GEMINI AI RETROSPECTIVE ADVICE - {conf['tag']}]*\n{ai_resp.strip()}")
 
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
-        prompt_text = f"""
-        You are a quantitative trading risk mentor for a $2,500 prop account.
-        Trade Completed:
-        - Asset: {conf['tag']}
-        - Direction: {side}
-        - Entry: {trade['entry']} | Exit: {current_price}
-        - Outcome: {outcome}
-        - Volume Delta: {delta_val}
-        - Volume Ratio: {vol_ratio}x ({vol_status})
-        
-        Provide a concise 3-bullet insight in conversational Hindi/Hinglish:
-        1. Volume delta aur absorption ke context me kya entry sahi thi?
-        2. Trade ke outcome ka main reason (Liquidity sweep & exhaustion).
-        3. Future ke liye practical recommendation.
-        Keep it strictly under 75 words.
-        """
-        payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
-        res = requests.post(url, headers=headers, json=payload, timeout=15)
-        
-        if res.status_code == 200:
-            data = res.json()
-            ai_text = data['candidates'][0]['content']['parts'][0]['text']
-            send_telegram_msg(f"🧠 *[GEMINI AI RETROSPECTIVE ADVICE - {conf['tag']}]*\n{ai_text.strip()}")
-        else:
-            print(f"Gemini API error status: {res.status_code} - {res.text}", flush=True)
-    except Exception as e:
-        print(f"Gemini execution error: {e}", flush=True)
+def run_zero_trade_ai_audit():
+    market_notes = []
+    for asset, conf in ASSETS.items():
+        highs = user_levels.get(asset, {}).get('highs', [])
+        lows = user_levels.get(asset, {}).get('lows', [])
+        market_notes.append(f"{asset}: Target Highs={highs}, Target Lows={lows}")
+
+    prompt = f"""
+    You are a professional prop firm risk analyst evaluating today's session for a $2,500 account.
+    Total trades taken today: 0 (No trade executed).
+    Active Radar Levels tracked today:
+    {market_notes}
+
+    Analyze the day in clean Hindi/Hinglish (3 bullet points, under 85 words):
+    1. Aaj trades na milne ka mukhya kaaran (Kya market rangebound/chop tha ya price levels se door raha)?
+    2. Missing Opportunity check: Kya koi standard 15M sweep bana jahan level thoda peeche tha?
+    3. Kal ke session ke liye trader ke liye 1-2 practical tips (Levels kaise adjust karein).
+    """
+    ai_resp = call_gemini(prompt)
+    if ai_resp:
+        send_telegram_msg(f"🧠 *[GEMINI DAILY SESSION COACH & MARKET AUDIT]*\n{ai_resp.strip()}")
 
 # =====================================================================
 # 7. TRADE SIZING & EXECUTION
@@ -537,7 +560,7 @@ def process_single_asset(name):
                 return
 
 # =====================================================================
-# 9. UNIFIED TELEGRAM COMMAND LISTENER (NO CONFLICT 100%)
+# 9. UNIFIED TELEGRAM COMMAND LISTENER (WITH DIRECT /ask_ai)
 # =====================================================================
 def listen_telegram_commands_master():
     global user_levels
@@ -575,12 +598,13 @@ def listen_telegram_commands_master():
                             l_str = ", ".join([f"{x}" for x in data.get('lows', [])]) or "None"
                             msg_out += f"*{asset}:*\n  🔺 *Highs:* {h_str}\n  🔻 *Lows:* {l_str}\n"
                         msg_out += (
-                            "-----------------------------\\nℹ️ *Commands:*\\n"
-                            "`/set_highs BTC 87130`\\n"
-                            "`/set_lows BTC 82900, 80150, 75560`\\n"
-                            "`/set_highs GBPUSD 1.3320`\\n"
-                            "`/set_lows GBPUSD 1.3209, 1.3175`\\n"
-                            "`/add_high GOLD 2685` | `/clear USDCAD`"
+                            "-----------------------------\nℹ️ *Commands:*\n"
+                            "`/set_highs BTC 87130`\n"
+                            "`/set_lows BTC 82900, 80150, 75560`\n"
+                            "`/set_highs GBPUSD 1.3320`\n"
+                            "`/set_lows GBPUSD 1.3209, 1.3175`\n"
+                            "`/add_high GOLD 2685` | `/clear USDCAD`\n"
+                            "`/ask_ai <apka sawal>` (Direct AI feedback)"
                         )
                         send_telegram_msg(msg_out)
 
@@ -618,13 +642,29 @@ def listen_telegram_commands_master():
                                 save_json(LEVELS_FILE, user_levels)
                                 send_telegram_msg(f"🧹 *[{asset} RADAR CLEARED]*")
 
+                    elif cmd == "/ask_ai":
+                        user_question = " ".join(parts[1:])
+                        if user_question:
+                            prompt = f"""
+                            You are a trading partner and mentor for a $2,500 The5ers prop account.
+                            Strategy: 15M Key Level Sweeps, Volume Delta, Liquidity Grabs.
+                            The user Suraj asks you: "{user_question}"
+                            
+                            Respond in polite, direct Hindi/Hinglish (under 90 words), acknowledging their perspective and giving practical trading advice.
+                            """
+                            ai_reply = call_gemini(prompt)
+                            if ai_reply:
+                                send_telegram_msg(f"🤖 *[GEMINI AI MENTOR]*\n{ai_reply.strip()}")
+                        else:
+                            send_telegram_msg("ℹ️ Sawal puchne ke liye aise likhein: `/ask_ai BTC me entry lene ka sahi time kya tha?`")
+
         except Exception as e:
             print(f"Telegram listener error: {e}", flush=True)
             time.sleep(5)
         time.sleep(1)
 
 # =====================================================================
-# 10. DAILY SUMMARY & CRON CHECKER
+# 10. DAILY SUMMARY & ZERO-TRADE AI AUDIT (11:30 PM IST)
 # =====================================================================
 def check_and_send_daily_summary():
     global performance, risk_guard
@@ -656,6 +696,11 @@ def check_and_send_daily_summary():
             f"-----------------------------------"
         )
         send_telegram_msg(summary_msg)
+        
+        # ZERO-TRADE OR LOW TRADE AI AUDIT
+        if performance['today_trades'] == 0:
+            run_zero_trade_ai_audit()
+            
         performance['daily_summary_sent'] = True
         save_json(PERF_FILE, performance)
 
@@ -666,7 +711,8 @@ def run_trading_bot():
         "• Assets: BTC, GOLD, EURUSD, GBPUSD, USDJPY, USDCAD\n"
         "• Daily Circuit Breaker: -$100.00 Net (Max 4 Trades)\n"
         "• Slots: Max 4 Concurrent (2 Crypto/Gold + 2 Forex)\n"
-        "• AI Advisor & Volume Delta Engine: Active\n"
+        "• Daily Zero-Trade AI Audit: Active (11:30 PM IST)\n"
+        "• Interactive Coach: Send `/ask_ai <sawal>` anytime!\n"
         "• Send `/levels` anytime to check radar!"
     )
 
