@@ -5,6 +5,7 @@ import threading
 import requests
 import json
 import os
+import base64
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 
@@ -30,7 +31,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Master Algo Sniper with Gemini AI Advisor Active 24/7!"
+    return "Master Algo Sniper with Gemini Vision Chart Analyst Active 24/7!"
 
 def start_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -121,7 +122,7 @@ ASSETS = {
         'is_forex': False,
         'sl_buffer': 3.0,
         'min_allowed_sl': 3.5,
-        'max_allowed_sl': 12.0,
+        'max_allowed_sl': 15.0,
         'trade_on_weekends': False,
         'active_trade': None,
         'last_candle_time': None
@@ -160,7 +161,7 @@ ASSETS = {
         'pip_size': 0.01,
         'sl_buffer': 0.08,
         'min_allowed_sl': 0.25,
-        'max_allowed_sl': 0.65,
+        'max_allowed_sl': 0.85,
         'trade_on_weekends': False,
         'active_trade': None,
         'last_candle_time': None
@@ -209,7 +210,6 @@ def get_candles(symbol, timeframe, limit=35):
             return None
 
 def calculate_volume_delta_profile(df):
-    """कैंडल के क्लोज, हाई और लो के आधार पर बाय/सेल वॉल्यूम फ्लो और डेल्टा का सटीक अनुमान"""
     try:
         if df is None or len(df) < 5:
             return 0.0, 1.0, "NORMAL"
@@ -244,16 +244,25 @@ def calculate_volume_delta_profile(df):
         return 0.0, 1.0, "NORMAL"
 
 # =====================================================================
-# 6. GEMINI AI POST-TRADE REASONER & ZERO-TRADE MARKET ANALYST
+# 6. GEMINI MULTIMODAL VISION & POST-TRADE AI ENGINE
 # =====================================================================
-def call_gemini(prompt_text):
+def call_gemini(prompt_text, image_b64=None):
     if not GEMINI_API_KEY:
         return None
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
-        payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
-        res = requests.post(url, headers=headers, json=payload, timeout=20)
+        parts = []
+        if image_b64:
+            parts.append({
+                "inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": image_b64
+                }
+            })
+        parts.append({"text": prompt_text})
+        payload = {"contents": [{"parts": parts}]}
+        res = requests.post(url, headers=headers, json=payload, timeout=35)
         if res.status_code == 200:
             data = res.json()
             return data['candidates'][0]['content']['parts'][0]['text']
@@ -310,19 +319,66 @@ def run_zero_trade_ai_audit():
     if ai_resp:
         send_telegram_msg(f"🧠 *[GEMINI DAILY SESSION COACH & MARKET AUDIT]*\n{ai_resp.strip()}")
 
+def analyze_user_chart_screenshot(file_id, user_caption=""):
+    send_telegram_msg("🔍 *[GEMINI VISION ANALYZING YOUR CHART...]*\nचार्ट का स्ट्रक्चर, ट्रेंडलाइन्स, सपोर्ट/रेजिस्टेंस और दोतरफ़ा (BUY/SELL) ब्रेकआउट पाथवे स्कैन हो रहे हैं...")
+    try:
+        f_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
+        f_res = requests.get(f_url, timeout=15).json()
+        if not f_res.get("ok"):
+            send_telegram_msg("❌ फ़ोटो डाउनलोड करने में समस्या आई, कृपया दोबारा भेजें।")
+            return
+        file_path = f_res["result"]["file_path"]
+
+        dl_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+        img_bytes = requests.get(dl_url, timeout=20).content
+        img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+
+        prompt = f"""
+        You are a quantitative institutional trader and technical chart mentor for a $2,500 The5ers prop account.
+        User submitted an image of their TradingView chart. User notes/caption: "{user_caption}"
+
+        Carefully analyze the chart image:
+        1. Identify the asset name (e.g. GOLD / XAUUSD, BTC, EURUSD, etc.) and timeframe shown.
+        2. Identify the pattern structure (Ascending Channel, Bear/Bull Flag, Wedge, S/R Range).
+        3. Formulate BOTH SCENARIOS with realistic price values directly read from the chart axes:
+           - 🟢 SCENARIO 1 (BULLISH / BOUNCE or BREAKOUT):
+             • Condition: (e.g. bounce from lower trendline/support)
+             • Exact Entry, Stop Loss, Take Profit
+             • 1% Risk ($25.00) calculated Lot size
+           - 🔴 SCENARIO 2 (BEARISH / BREAKDOWN & RETEST):
+             • Condition: (e.g. breakdown below lower trendline & failed retest)
+             • Exact Entry, Stop Loss, Take Profit
+             • 1% Risk ($25.00) calculated Lot size
+        4. Give direct ready-to-copy commands for BOTH scenarios so user can easily execute whichever triggers!
+
+        Format strictly in polite, clear Hindi/Hinglish with bold formatting. Keep analysis extremely structured and under 150 words.
+        """
+        analysis = call_gemini(prompt, image_b64=img_b64)
+        if analysis:
+            send_telegram_msg(f"📊 *[GEMINI AI CHART VISION REPORT]*\n\n{analysis.strip()}")
+        else:
+            send_telegram_msg("⚠️ AI चार्ट का विश्लेषण नहीं कर सका, कृपया स्पष्ट स्क्रीनशॉट भेजें।")
+
+    except Exception as e:
+        print(f"Chart vision handling error: {e}", flush=True)
+        send_telegram_msg(f"⚠️ चार्ट स्कैनिंग एरर: {e}")
+
 # =====================================================================
-# 7. TRADE SIZING & EXECUTION
+# 7. TRADE SIZING & EXECUTION (DISCRETIONARY & AUTO-SWEEP)
 # =====================================================================
-def create_master_split_trade(asset_key, side, entry, calculated_sl, trade_label="KEY-LEVEL SWEEP"):
+def create_master_split_trade(asset_key, side, entry, calculated_sl, custom_tp=None, trade_label="KEY-LEVEL SWEEP"):
     conf = ASSETS[asset_key]
     crypto_c, forex_c, total_c = get_slot_counts()
 
     if total_c >= MAX_TOTAL_SLOTS:
+        send_telegram_msg("⚠️ *[SLOTS FULL]* कुल 4 ट्रेड्स पहले से एक्टिव हैं!")
         return None
     if conf['category'] == 'CRYPTO' and crypto_c >= MAX_CRYPTO_SLOTS and forex_c < MAX_FOREX_SLOTS:
         if total_c >= 3:
+            send_telegram_msg("⚠️ *[CRYPTO SLOTS FULL]* क्रिप्टो के स्लॉट्स भरे हुए हैं!")
             return None
     elif conf['category'] == 'FOREX' and forex_c >= MAX_FOREX_SLOTS:
+        send_telegram_msg("⚠️ *[FOREX SLOTS FULL]* फॉरेक्स के स्लॉट्स भरे हुए हैं!")
         return None
 
     raw_distance = abs(entry - calculated_sl)
@@ -359,12 +415,16 @@ def create_master_split_trade(asset_key, side, entry, calculated_sl, trade_label
         vol_unit_str = "BTC"
         risk_info = f"${effective_distance:.2f}"
 
-    if side == 'BUY':
-        tp1 = entry + (effective_distance * 2.5)
-        tp2 = entry + (effective_distance * 5.0)
+    if custom_tp is not None:
+        tp1 = round(entry + ((custom_tp - entry) * 0.5), 5) if side == 'BUY' else round(entry - ((entry - custom_tp) * 0.5), 5)
+        tp2 = custom_tp
     else:
-        tp1 = entry - (effective_distance * 2.5)
-        tp2 = entry - (effective_distance * 5.0)
+        if side == 'BUY':
+            tp1 = entry + (effective_distance * 2.5)
+            tp2 = entry + (effective_distance * 5.0)
+        else:
+            tp1 = entry - (effective_distance * 2.5)
+            tp2 = entry - (effective_distance * 5.0)
 
     trade = {
         'asset': asset_key,
@@ -389,8 +449,8 @@ def create_master_split_trade(asset_key, side, entry, calculated_sl, trade_label
         f"📈 *Direction:* {side}\n"
         f"💵 *Entry:* {entry} | *Safe SL:* {actual_sl} (Risk: {risk_info})\n"
         f"💼 *Total Volume:* {calculated_lots} {vol_unit_str}\n"
-        f"   • *Lot 1:* {lot1} {vol_unit_str} (TP1 @ 1:2.5 RR)\n"
-        f"   • *Lot 2:* {lot2} {vol_unit_str} (TP2 @ 1:5.0 RR)\n"
+        f"   • *Lot 1:* {lot1} {vol_unit_str} (TP1 @ Half-Way: {tp1})\n"
+        f"   • *Lot 2:* {lot2} {vol_unit_str} (TP2 @ Target: {tp2})\n"
         f"🎯 *TP1 Target:* {tp1}\n"
         f"🏆 *TP2 Target:* {tp2}\n"
         f"🔒 *Max Risk:* $25.00 (1.0%)\n"
@@ -467,7 +527,7 @@ def process_single_asset(name):
                 send_telegram_msg(
                     f"💰 *[{conf['tag']} TP1 HIT - 50% PARTIAL BOOKED]* 🎯\n"
                     f"✅ *Lot 1 Closed:* {trade['lot1_size']} {trade['vol_unit_str']} @ {current_price}\n"
-                    f"💵 *Profit:* +31.25 USD (+1.25R)\n"
+                    f"💵 *Profit:* +31.25 USD\n"
                     f"🛡️ *SL Moved to Entry:* {entry} (Trade Risk-Free!)\n"
                     f"📊 *Global Net PnL:* {performance['today_pnl_usd']:+.2f} USD"
                 )
@@ -486,7 +546,7 @@ def process_single_asset(name):
                 send_telegram_msg(
                     f"🏆 *[{conf['tag']} TP2 HIT - FULL TARGET ACCOMPLISHED]* 🚀\n"
                     f"✅ *Lot 2 Closed:* {trade['lot2_size']} {trade['vol_unit_str']} @ {current_price}\n"
-                    f"💵 *Total Trade Profit:* *+93.75 USD (+3.75R / +3.75%)*\n"
+                    f"💵 *Total Trade Profit:* *+93.75 USD (+3.75% Net)*\n"
                     f"📊 *Global Net PnL:* {performance['today_pnl_usd']:+.2f} USD"
                 )
                 delta_val, vol_ratio, vol_status = calculate_volume_delta_profile(df_15m)
@@ -539,7 +599,6 @@ def process_single_asset(name):
         target_highs = list(user_levels.get(name, {}).get('highs', []))
         target_lows = list(user_levels.get(name, {}).get('lows', []))
 
-        # USER KEY-LOW SWEEP (BUY)
         for t_low in target_lows:
             if c_low < t_low and c_close > t_low and c_close > c_open and conf['active_trade'] is None:
                 sl = min(c_low, p_low) - conf['sl_buffer']
@@ -549,7 +608,6 @@ def process_single_asset(name):
                 send_telegram_msg(f"🎯 *[LEVEL MITIGATED]* {name} Key-Low {t_low} hit and removed from active radar!")
                 return
 
-        # USER KEY-HIGH SWEEP (SELL)
         for t_high in target_highs:
             if c_high > t_high and c_close < t_high and c_close < c_open and conf['active_trade'] is None:
                 sl = max(c_high, p_high) + conf['sl_buffer']
@@ -560,12 +618,69 @@ def process_single_asset(name):
                 return
 
 # =====================================================================
-# 9. UNIFIED TELEGRAM COMMAND LISTENER (WITH DIRECT /ask_ai)
+# 9. UNIFIED TELEGRAM COMMAND & PHOTO LISTENER
 # =====================================================================
+def handle_vet_trade(parts):
+    if len(parts) < 6:
+        send_telegram_msg(
+            "ℹ️ *Format:* `/vet_trade <PAIR> <BUY/SELL> <ENTRY> <SL> <TP>`"
+        )
+        return
+
+    asset = parts[1].upper().replace("/", "")
+    side = parts[2].upper()
+    try:
+        entry = float(parts[3])
+        sl = float(parts[4])
+        tp = float(parts[5])
+    except ValueError:
+        send_telegram_msg("❌ *Error:* Entry, SL, aur TP numbers me hone chahiye!")
+        return
+
+    if asset not in ASSETS:
+        send_telegram_msg(f"❌ *Unknown Asset:* `{asset}`. Available: {list(ASSETS.keys())}")
+        return
+
+    conf = ASSETS[asset]
+    if conf['active_trade'] is not None:
+        send_telegram_msg(f"⚠️️ *[{conf['tag']}]* Pehle se ek active trade chal raha hai!")
+        return
+
+    send_telegram_msg(f"🔍 *[AI VETTING IN PROGRESS - {conf['tag']}]*\nGemini 2.5 Flash live volume delta aur context analyze kar raha hai...")
+    df_15m = get_candles(conf['symbol'], '15m', limit=35)
+    delta_val, vol_ratio, vol_status = calculate_volume_delta_profile(df_15m)
+
+    rr_ratio = round(abs(tp - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0
+    prompt = f"""
+    You are an institutional risk & quantitative execution engine for a $2,500 The5ers prop account.
+    A trader submitted a discretionary setup:
+    - Asset: {conf['tag']}
+    - Side: {side}
+    - Entry: {entry} | SL: {sl} | TP: {tp} | RR: 1:{rr_ratio}
+    - Market Volume Delta: {delta_val} | Volume Ratio: {vol_ratio}x ({vol_status})
+
+    Output format strictly:
+    DECISION: [APPROVED or REJECTED]
+    CONFIDENCE: [Score from 1 to 10]
+    REASONING: [Concise 2-bullet analysis in Hindi/Hinglish, under 60 words]
+    """
+    ai_verdict = call_gemini(prompt)
+    if not ai_verdict:
+        send_telegram_msg("⚠️ *AI Service Error:* Analysis nahi ho paya.")
+        return
+
+    is_approved = "DECISION: APPROVED" in ai_verdict.upper()
+
+    if is_approved:
+        send_telegram_msg(f"✅ *[AI VETTING: APPROVED & EXECUTED]* 🎯\n{ai_verdict.strip()}\n-----------------------------")
+        conf['active_trade'] = create_master_split_trade(asset, side, entry, sl, custom_tp=tp, trade_label="AI-VETTED ENTRY")
+    else:
+        send_telegram_msg(f"❌ *[AI VETTING: REJECTED]* 🛡️️\n{ai_verdict.strip()}\n🚫 *Action:* Risk control ke teht trade nahi liya gaya.")
+
 def listen_telegram_commands_master():
     global user_levels
     last_update_id = 0
-    print("Master Unified Telegram Command Listener Active...", flush=True)
+    print("Master Unified Telegram Command & Vision Listener Active...", flush=True)
 
     while True:
         try:
@@ -576,10 +691,22 @@ def listen_telegram_commands_master():
                 for item in resp["result"]:
                     last_update_id = item["update_id"]
                     msg = item.get("message", {})
-                    text = msg.get("text", "").strip()
                     chat_id = str(msg.get("chat", {}).get("id", ""))
 
-                    if chat_id != str(TELEGRAM_CHAT_ID) or not text.startswith("/"):
+                    if chat_id != str(TELEGRAM_CHAT_ID):
+                        continue
+
+                    # 1. PHOTO HANDLER (DIRECT CHART SCREENSHOT RECOGNITION)
+                    if "photo" in msg:
+                        photos = msg.get("photo", [])
+                        best_photo = photos[-1]
+                        caption = msg.get("caption", "").strip()
+                        analyze_user_chart_screenshot(best_photo["file_id"], user_caption=caption)
+                        continue
+
+                    # 2. TEXT COMMAND HANDLER
+                    text = msg.get("text", "").strip()
+                    if not text.startswith("/"):
                         continue
 
                     parts = text.split()
@@ -598,15 +725,18 @@ def listen_telegram_commands_master():
                             l_str = ", ".join([f"{x}" for x in data.get('lows', [])]) or "None"
                             msg_out += f"*{asset}:*\n  🔺 *Highs:* {h_str}\n  🔻 *Lows:* {l_str}\n"
                         msg_out += (
-                            "-----------------------------\nℹ️ *Commands:*\n"
+                            "-----------------------------\n📸 *Send ANY Chart Photo directly!* (Gemini Vision auto-scans)\n\n"
+                            "ℹ️ *Commands:*\n"
+                            "`/vet_trade GOLD BUY 4189.50 4183.95 4205.78`\n"
                             "`/set_highs BTC 87130`\n"
                             "`/set_lows BTC 82900, 80150, 75560`\n"
-                            "`/set_highs GBPUSD 1.3320`\n"
-                            "`/set_lows GBPUSD 1.3209, 1.3175`\n"
                             "`/add_high GOLD 2685` | `/clear USDCAD`\n"
-                            "`/ask_ai <apka sawal>` (Direct AI feedback)"
+                            "`/ask_ai <apka sawal>`"
                         )
                         send_telegram_msg(msg_out)
+
+                    elif cmd == "/vet_trade":
+                        handle_vet_trade(parts)
 
                     elif cmd in ["/set_highs", "/set_lows"]:
                         if len(parts) >= 3:
@@ -650,7 +780,7 @@ def listen_telegram_commands_master():
                             Strategy: 15M Key Level Sweeps, Volume Delta, Liquidity Grabs.
                             The user Suraj asks you: "{user_question}"
                             
-                            Respond in polite, direct Hindi/Hinglish (under 90 words), acknowledging their perspective and giving practical trading advice.
+                            Respond in polite, direct Hindi/Hinglish (under 90 words).
                             """
                             ai_reply = call_gemini(prompt)
                             if ai_reply:
@@ -697,7 +827,6 @@ def check_and_send_daily_summary():
         )
         send_telegram_msg(summary_msg)
         
-        # ZERO-TRADE OR LOW TRADE AI AUDIT
         if performance['today_trades'] == 0:
             run_zero_trade_ai_audit()
             
@@ -705,14 +834,13 @@ def check_and_send_daily_summary():
         save_json(PERF_FILE, performance)
 
 def run_trading_bot():
-    print("Master Algo Sniper with Gemini Active...", flush=True)
+    print("Master Algo Sniper with Gemini Vision Active...", flush=True)
     send_telegram_msg(
-        "🚀 *Master Algo Unified Sniper + Gemini AI Online!* 🧠\n"
+        "🚀 *Master Algo Unified Sniper + Gemini Vision AI Online!* 👁️🧠\n"
         "• Assets: BTC, GOLD, EURUSD, GBPUSD, USDJPY, USDCAD\n"
         "• Daily Circuit Breaker: -$100.00 Net (Max 4 Trades)\n"
         "• Slots: Max 4 Concurrent (2 Crypto/Gold + 2 Forex)\n"
-        "• Daily Zero-Trade AI Audit: Active (11:30 PM IST)\n"
-        "• Interactive Coach: Send `/ask_ai <sawal>` anytime!\n"
+        "• 📸 *Direct Chart Vision:* Just upload ANY chart photo directly to Telegram!\n"
         "• Send `/levels` anytime to check radar!"
     )
 
