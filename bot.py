@@ -9,10 +9,11 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask
 
 # =====================================================================
-# 1. TELEGRAM CONFIGURATION (SINGLE UNIFIED BOT)
+# 1. API & CREDENTIALS CONFIGURATION
 # =====================================================================
 TELEGRAM_BOT_TOKEN = "8895341894:AAEE-p0_Ylj6RFmqr06nx5xNT7vzyBaBTqI"
 TELEGRAM_CHAT_ID = "998154896"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 def send_telegram_msg(message):
     try:
@@ -29,13 +30,13 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Master Algo Sniper & AI Advisor Active 24/7!"
+    return "Master Algo Sniper with Gemini AI Advisor Active 24/7!"
 
 def start_web_server():
     app.run(host='0.0.0.0', port=10000)
 
 # =====================================================================
-# 3. GLOBAL RISK ENGINE & ACCOUNT LIMITS ($2500 SIZE)
+# 3. GLOBAL RISK ENGINE & ACCOUNT LIMITS ($2500 THE5ERS ACCOUNT)
 # =====================================================================
 exchange = ccxt.kraken({
     'enableRateLimit': True,
@@ -44,8 +45,8 @@ exchange = ccxt.kraken({
 api_lock = threading.Lock()
 
 ACCOUNT_SIZE_USD = 2500.0
-RISK_PER_TRADE_USD = 25.0       # 1.0% Risk ($25)
-MAX_DAILY_LOSS_USD = 100.0      # Strict -$100.00 Net Daily Circuit Breaker (4 trades max loss)
+RISK_PER_TRADE_USD = 25.0       # 1.0% Risk ($25.00)
+MAX_DAILY_LOSS_USD = 100.0      # Strict -$100.00 Net Daily Circuit Breaker (Max 4 losses)
 
 MAX_CRYPTO_SLOTS = 2
 MAX_FOREX_SLOTS = 2
@@ -84,10 +85,7 @@ performance = load_json(PERF_FILE, {
 })
 
 user_levels = load_json(LEVELS_FILE, {
-    'BTC': {
-        'highs': [87130.0],
-        'lows': [82900.0, 80150.0, 75560.0]
-    },
+    'BTC': {'highs': [87130.0], 'lows': [82900.0, 80150.0, 75560.0]},
     'GOLD': {'highs': [], 'lows': []},
     'EURUSD': {'highs': [], 'lows': []},
     'GBPUSD': {'highs': [], 'lows': []},
@@ -104,7 +102,6 @@ risk_guard = {
 # 4. ASSET SPECIFICATIONS (CRYPTO + FOREX)
 # =====================================================================
 ASSETS = {
-    # CRYPTO / GOLD BUCKET
     'BTC': {
         'category': 'CRYPTO',
         'symbol': 'BTC/USDT',
@@ -129,7 +126,6 @@ ASSETS = {
         'active_trade': None,
         'last_candle_time': None
     },
-    # FOREX BUCKET
     'EURUSD': {
         'category': 'FOREX',
         'symbol': 'EUR/USD',
@@ -196,7 +192,7 @@ def check_global_circuit_breaker():
         send_telegram_msg(
             "🚨🚨 *[GLOBAL MASTER CIRCUIT BREAKER ACTIVATED]* 🚨🚨\n"
             f"कुल संयुक्त दैनिक नुकसान (-${abs(performance['today_pnl_usd']):.2f}) -$100.00 सीमा पर पहुँच गया!\n"
-            "🛡️ *ACCOUNT SAFEGUARD:* ड्रॉडाउन रोकने के लिए पूरा बॉट आज रात 12:00 AM तक पूरी तरह FREEZE रहेगा।"
+            "🛡️ *ACCOUNT SAFEGUARD:* आज रात 12:00 AM IST तक पूरा बॉट फ़्रीज़ रहेगा।"
         )
 
 # =====================================================================
@@ -244,11 +240,55 @@ def calculate_volume_delta_profile(df):
 
         return round(net_delta, 2), vol_ratio, vol_status
     except Exception as e:
-        print(f"Delta error: {e}", flush=True)
+        print(f"Delta calculation error: {e}", flush=True)
         return 0.0, 1.0, "NORMAL"
 
 # =====================================================================
-# 6. TRADE SIZING & EXECUTION
+# 6. GEMINI AI POST-TRADE REASONER & ADVISOR
+# =====================================================================
+def run_ai_trade_advisor(outcome, trade, current_price, delta_val, vol_ratio, vol_status):
+    """Gemini 2.5 Flash द्वारा वास्तविक समय ट्रेड समीक्षा एवं सलाह"""
+    asset = trade['asset']
+    side = trade['side']
+    conf = ASSETS[asset]
+
+    if not GEMINI_API_KEY:
+        print("Gemini API key missing, skipping AI advice.", flush=True)
+        return
+
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        prompt_text = f"""
+        You are a quantitative trading risk mentor for a $2,500 prop account.
+        Trade Completed:
+        - Asset: {conf['tag']}
+        - Direction: {side}
+        - Entry: {trade['entry']} | Exit: {current_price}
+        - Outcome: {outcome}
+        - Volume Delta: {delta_val}
+        - Volume Ratio: {vol_ratio}x ({vol_status})
+        
+        Provide a concise 3-bullet insight in conversational Hindi/Hinglish:
+        1. Volume delta aur absorption ke context me kya entry sahi thi?
+        2. Trade ke outcome ka main reason (Liquidity sweep & exhaustion).
+        3. Future ke liye practical recommendation.
+        Keep it strictly under 75 words.
+        """
+        payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
+        
+        if res.status_code == 200:
+            data = res.json()
+            ai_text = data['candidates'][0]['content']['parts'][0]['text']
+            send_telegram_msg(f"🧠 *[GEMINI AI RETROSPECTIVE ADVICE - {conf['tag']}]*\n{ai_text.strip()}")
+        else:
+            print(f"Gemini API error status: {res.status_code} - {res.text}", flush=True)
+    except Exception as e:
+        print(f"Gemini execution error: {e}", flush=True)
+
+# =====================================================================
+# 7. TRADE SIZING & EXECUTION
 # =====================================================================
 def create_master_split_trade(asset_key, side, entry, calculated_sl, trade_label="KEY-LEVEL SWEEP"):
     conf = ASSETS[asset_key]
@@ -337,36 +377,7 @@ def create_master_split_trade(asset_key, side, entry, calculated_sl, trade_label
     return trade
 
 # =====================================================================
-# 7. AI ADVISOR & COUNTERFACTUAL ANALYZER
-# =====================================================================
-def run_ai_trade_advisor(outcome, trade, current_price, delta_val, vol_ratio, vol_status):
-    asset = trade['asset']
-    side = trade['side']
-    conf = ASSETS[asset]
-
-    if outcome == "LOSS":
-        advice = (
-            f"🧠 *[AI RETROSPECTIVE ADVICE - {conf['tag']}]*\n"
-            f"• *Trade Stopped:* {side} entry at {trade['entry']} hit SL.\n"
-            f"• *Volume Delta Analysis:* Delta was {delta_val} with {vol_ratio}x relative volume ({vol_status}).\n"
-            f"• *AI Insight:* Sweep ke turant baad opposite aggressive volume dominant tha. Stop-loss buffer protected the account from a deeper drawdown.\n"
-            f"• *Recommendation:* Agle high-probability sweep ke liye higher timeframe consolidation zone ke confirm hone ka wait karein."
-        )
-    elif outcome == "TP2":
-        advice = (
-            f"🧠 *[AI RETROSPECTIVE ADVICE - {conf['tag']}]*\n"
-            f"• *Trade Accomplished:* Full 1:5 Risk-Reward (+3.75% Net) achieved!\n"
-            f"• *Volume Delta Analysis:* Sweep candle confirmed high exhaustion ({vol_status}) with delta shifting favorably ({delta_val}).\n"
-            f"• *Recommendation:* Setup was textbook clean. Continue adhering to user-defined key liquidity boundaries."
-        )
-    else:
-        advice = ""
-
-    if advice:
-        send_telegram_msg(advice)
-
-# =====================================================================
-# 8. ASSET MONITORING LOOP
+# 8. ASSET MONITORING & EXECUTION LOOP
 # =====================================================================
 def process_single_asset(name):
     global performance, risk_guard, user_levels
@@ -564,11 +575,11 @@ def listen_telegram_commands_master():
                             l_str = ", ".join([f"{x}" for x in data.get('lows', [])]) or "None"
                             msg_out += f"*{asset}:*\n  🔺 *Highs:* {h_str}\n  🔻 *Lows:* {l_str}\n"
                         msg_out += (
-                            "-----------------------------\nℹ️ *Commands:*\n"
-                            "`/set_highs BTC 87130`\n"
-                            "`/set_lows BTC 82900, 80150, 75560`\n"
-                            "`/set_highs GBPUSD 1.3320`\n"
-                            "`/set_lows GBPUSD 1.3209, 1.3175`\n"
+                            "-----------------------------\\nℹ️ *Commands:*\\n"
+                            "`/set_highs BTC 87130`\\n"
+                            "`/set_lows BTC 82900, 80150, 75560`\\n"
+                            "`/set_highs GBPUSD 1.3320`\\n"
+                            "`/set_lows GBPUSD 1.3209, 1.3175`\\n"
                             "`/add_high GOLD 2685` | `/clear USDCAD`"
                         )
                         send_telegram_msg(msg_out)
@@ -649,13 +660,12 @@ def check_and_send_daily_summary():
         save_json(PERF_FILE, performance)
 
 def run_trading_bot():
-    print("Master Algo Sniper Active...", flush=True)
+    print("Master Algo Sniper with Gemini Active...", flush=True)
     send_telegram_msg(
-        "🚀 *Master Algo Unified Sniper Online!*\n"
+        "🚀 *Master Algo Unified Sniper + Gemini AI Online!* 🧠\n"
         "• Assets: BTC, GOLD, EURUSD, GBPUSD, USDJPY, USDCAD\n"
         "• Daily Circuit Breaker: -$100.00 Net (Max 4 Trades)\n"
         "• Slots: Max 4 Concurrent (2 Crypto/Gold + 2 Forex)\n"
-        "• Monday Gap-Fill: Active (3:30 - 7:30 AM IST)\n"
         "• AI Advisor & Volume Delta Engine: Active\n"
         "• Send `/levels` anytime to check radar!"
     )
