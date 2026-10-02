@@ -251,7 +251,7 @@ def call_gemini(prompt_text, image_b64=None):
         print("GEMINI_API_KEY is empty!", flush=True)
         return None
     try:
-        model_name = "gemini-1.5-flash"
+        model_name = "gemini-2.5-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
         
