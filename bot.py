@@ -31,7 +31,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Master Algo Sniper with Robust Gemini Vision & Text AI Active 24/7!"
+    return "Master Algo Sniper with Robust Gemini 3.8-Flash Vision Active 24/7!"
 
 def start_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -244,39 +244,47 @@ def calculate_volume_delta_profile(df):
         return 0.0, 1.0, "NORMAL"
 
 # =====================================================================
-# 6. ROBUST GEMINI MULTIMODAL VISION & AI REASONER
+# 6. ROBUST GEMINI 3.8-FLASH MULTIMODAL VISION & AUTO-RETRY ENGINE
 # =====================================================================
 def call_gemini(prompt_text, image_b64=None):
     if not GEMINI_API_KEY:
         print("GEMINI_API_KEY is empty!", flush=True)
         return None
-    try:
-        model_name = "gemini-3.8-flash"
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
-        
-        parts = []
-        if image_b64:
-            parts.append({
-                "inlineData": {
-                    "mimeType": "image/jpeg",
-                    "data": image_b64
-                }
-            })
-        parts.append({"text": prompt_text})
-        
-        payload = {"contents": [{"parts": parts}]}
-        res = requests.post(url, headers=headers, json=payload, timeout=40)
-        
-        if res.status_code == 200:
-            data = res.json()
-            return data['candidates'][0]['content']['parts'][0]['text']
-        else:
-            print(f"Gemini API error ({res.status_code}): {res.text}", flush=True)
-            return None
-    except Exception as e:
-        print(f"Gemini connection error: {e}", flush=True)
-        return None
+
+    model_name = "gemini-3.8-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+
+    parts = []
+    if image_b64:
+        parts.append({
+            "inlineData": {
+                "mimeType": "image/jpeg",
+                "data": image_b64
+            }
+        })
+    parts.append({"text": prompt_text})
+    payload = {"contents": [{"parts": parts}]}
+
+    # 503 Server Busy / 429 Rate Limit Auto-Retry Handler (3 attempts)
+    for attempt in range(3):
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=40)
+            if res.status_code == 200:
+                data = res.json()
+                return data['candidates'][0]['content']['parts'][0]['text']
+            elif res.status_code in [503, 429]:
+                print(f"Gemini Server Busy ({res.status_code}) - Attempt {attempt+1}/3, retrying in 3s...", flush=True)
+                time.sleep(3)
+                continue
+            else:
+                print(f"Gemini API error ({res.status_code}): {res.text}", flush=True)
+                return None
+        except Exception as e:
+            print(f"Gemini connection error (Attempt {attempt+1}/3): {e}", flush=True)
+            time.sleep(2)
+
+    return None
 
 def run_ai_trade_advisor(outcome, trade, current_price, delta_val, vol_ratio, vol_status):
     asset = trade['asset']
@@ -535,7 +543,7 @@ def process_single_asset(name):
                     f"💰 *[{conf['tag']} TP1 HIT - 50% PARTIAL BOOKED]* 🎯\n"
                     f"✅ *Lot 1 Closed:* {trade['lot1_size']} {trade['vol_unit_str']} @ {current_price}\n"
                     f"💵 *Profit:* +31.25 USD\n"
-                    f"🛡️ *SL Moved to Entry:* {entry} (Trade Risk-Free!)\n"
+                    f"🛡️️ *SL Moved to Entry:* {entry} (Trade Risk-Free!)\n"
                     f"📊 *Global Net PnL:* {performance['today_pnl_usd']:+.2f} USD"
                 )
 
@@ -654,7 +662,7 @@ def handle_vet_trade(parts):
         send_telegram_msg(f"⚠️ *[{conf['tag']}]* Pehle se ek active trade chal raha hai!")
         return
 
-    send_telegram_msg(f"🔍 *[AI VETTING IN PROGRESS - {conf['tag']}]*\nGemini 1.5 Flash live volume delta aur context analyze kar raha hai...")
+    send_telegram_msg(f"🔍 *[AI VETTING IN PROGRESS - {conf['tag']}]*\nGemini 3.8-Flash live volume delta aur context analyze kar raha hai...")
     df_15m = get_candles(conf['symbol'], '15m', limit=35)
     delta_val, vol_ratio, vol_status = calculate_volume_delta_profile(df_15m)
 
@@ -683,7 +691,7 @@ def handle_vet_trade(parts):
         send_telegram_msg(f"✅ *[AI VETTING: APPROVED & EXECUTED]* 🎯\n{ai_verdict.strip()}\n-----------------------------")
         conf['active_trade'] = create_master_split_trade(asset, side, entry, sl, custom_tp=tp, trade_label="AI-VETTED ENTRY")
     else:
-        send_telegram_msg(f"❌ *[AI VETTING: REJECTED]* 🛡️️\n{ai_verdict.strip()}\n🚫 *Action:* Risk control ke teht trade nahi liya gaya.")
+        send_telegram_msg(f"❌ *[AI VETTING: REJECTED]* 🛡\n{ai_verdict.strip()}\n🚫 *Action:* Risk control ke teht trade nahi liya gaya.")
 
 def listen_telegram_commands_master():
     global user_levels
@@ -842,13 +850,13 @@ def check_and_send_daily_summary():
         save_json(PERF_FILE, performance)
 
 def run_trading_bot():
-    print("Master Algo Sniper with Robust Gemini Active...", flush=True)
+    print("Master Algo Sniper with Gemini 3.8-Flash Active...", flush=True)
     send_telegram_msg(
-        "🚀 *Master Algo Unified Sniper + Robust Gemini Vision AI Online!* 👁️🧠\n"
+        "🚀 *Master Algo Unified Sniper + Gemini 3.8-Flash Vision Online!* 👁️🧠\n"
         "• Assets: BTC, GOLD, EURUSD, GBPUSD, USDJPY, USDCAD\n"
         "• Daily Circuit Breaker: -$100.00 Net (Max 4 Trades)\n"
         "• Slots: Max 4 Concurrent (2 Crypto/Gold + 2 Forex)\n"
-        "• 📸 *Direct Chart Vision (Fixed):* Upload ANY chart photo directly!\n"
+        "• 📸 *Direct Chart Vision:* Upload ANY chart photo directly! (Auto-Retry on Spikes Enabled)\n"
         "• Send `/levels` anytime to check radar!"
     )
 
