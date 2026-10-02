@@ -250,8 +250,9 @@ def call_gemini(prompt_text, image_b64=None):
     if not GEMINI_API_KEY:
         return None
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={GEMINI_API_KEY}"
+    
+     headers = {"Content-Type": "application/json"}
         parts = []
         if image_b64:
             parts.append({
