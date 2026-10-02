@@ -31,7 +31,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Master Algo Sniper with Robust Gemini 3.8-Flash Vision Active 24/7!"
+    return "Master Algo Sniper with Single-Direction Gemini Vision Active 24/7!"
 
 def start_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -333,7 +333,7 @@ def run_zero_trade_ai_audit():
         send_telegram_msg(f"🧠 *[GEMINI DAILY SESSION COACH & MARKET AUDIT]*\n{ai_resp.strip()}")
 
 def analyze_user_chart_screenshot(file_id, user_caption=""):
-    send_telegram_msg("🔍 *[GEMINI VISION ANALYZING YOUR CHART...]*\nचार्ट का स्ट्रक्चर, लेवल्स, कैंडल्स और दोनों तरफ़ के ब्रेकआउट/बाउंस पाथवे स्कैन हो रहे हैं...")
+    send_telegram_msg("🔍 *[GEMINI VISION ANALYZING YOUR SETUP...]*\nचार्ट और आपके ट्रेड इंटेंट (BUY या SELL) को परखा जा रहा है...")
     try:
         f_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
         f_res = requests.get(f_url, timeout=20).json()
@@ -348,29 +348,31 @@ def analyze_user_chart_screenshot(file_id, user_caption=""):
 
         prompt = f"""
         You are an elite quantitative prop firm risk mentor for Suraj Nadankar's $2,500 The5ers account.
-        User submitted an image of their TradingView chart. User notes/caption: "{user_caption}"
+        User submitted a TradingView chart screenshot. User caption/notes: "{user_caption}".
 
-        Carefully examine the chart image:
-        1. Identify the Asset (GOLD / XAUUSD, BTC, EURUSD, etc.) and timeframe shown.
-        2. Identify key patterns (Channel, Flag, Wedge, S/R zone, wick rejections, liquidity pools).
-        3. Formulate BOTH SCENARIOS with realistic price numbers directly read from the chart:
-           - 🟢 SCENARIO 1 (BULLISH / BOUNCE or BREAKOUT):
-             • Setup condition (e.g. bounce from support / breakout above level)
-             • Exact Entry, Stop Loss, Take Profit
-             • 1% Risk ($25.00) calculated Lot size
-           - 🔴 SCENARIO 2 (BEARISH / BREAKDOWN or RETEST):
-             • Setup condition (e.g. trendline break & retest rejection)
-             • Exact Entry, Stop Loss, Take Profit
-             • 1% Risk ($25.00) calculated Lot size
-        4. Provide ready-to-copy commands for BOTH scenarios so user can easily execute whichever triggers:
-           `/vet_trade <PAIR> BUY <ENTRY> <SL> <TP>`
-           `/vet_trade <PAIR> SELL <ENTRY> <SL> <TP>`
+        CRITICAL DIRECTIONAL INSTRUCTION:
+        Carefully inspect the chart visual markers and any text/captions to identify the trader's SPECIFIC INTENT (BUY or SELL).
+        - If the user/chart shows a BUY/LONG setup (e.g., green target box above, long position tool, buy caption, upward arrow, support bounce):
+          • Focus EXCLUSIVELY on evaluating the BUY setup. DO NOT mention, calculate, or suggest any SELL scenario!
+          • If this BUY setup is valid and safe:
+            - State: "🎯 VERDICT: BUY SETUP APPROVED"
+            - Give the exact Entry, Stop Loss, Target, and Lot size for 1% Risk ($25.00).
+            - Give ONE single ready-to-copy command: `/vet_trade <PAIR> BUY <ENTRY> <SL> <TP>`
+          • If this BUY setup is risky or poor:
+            - State: "⛔ VERDICT: BUY SETUP REJECTED / AVOID"
+            - Explain why (e.g., strong resistance ahead, low liquidity, fakeout trap).
+            - Explicitly say: "Is trade ko chhod dena behtar hai, koi ulta (SELL) trade mat lijiye."
 
-        Write clearly in clean, structured Hindi/Hinglish with bold formatting (under 160 words).
+        - If the user/chart shows a SELL/SHORT setup (e.g., red stop box above, short position tool, sell caption, resistance rejection):
+          • Focus EXCLUSIVELY on evaluating the SELL setup. DO NOT mention or suggest any BUY scenario!
+          • If valid: Give Entry, SL, TP, 1% Lot size and `/vet_trade <PAIR> SELL <ENTRY> <SL> <TP>`.
+          • If risky: State "⛔ VERDICT: SELL SETUP REJECTED / AVOID" and advise to let it pass.
+
+        Format strictly in clean Hindi/Hinglish with bold formatting. Keep analysis crisp and under 120 words.
         """
         analysis = call_gemini(prompt, image_b64=img_b64)
         if analysis:
-            send_telegram_msg(f"📊 *[GEMINI AI CHART VISION REPORT]*\n\n{analysis.strip()}")
+            send_telegram_msg(f"📊 *[GEMINI AI CHART SETUP REPORT]*\n\n{analysis.strip()}")
         else:
             send_telegram_msg("⚠️ AI चार्ट का विश्लेषण नहीं कर सका। कृपया स्पष्ट स्क्रीनशॉट दोबारा भेजें।")
 
@@ -390,7 +392,7 @@ def create_master_split_trade(asset_key, side, entry, calculated_sl, custom_tp=N
         return None
     if conf['category'] == 'CRYPTO' and crypto_c >= MAX_CRYPTO_SLOTS and forex_c < MAX_FOREX_SLOTS:
         if total_c >= 3:
-            send_telegram_msg("⚠️ *[CRYPTO SLOTS FULL]* क्रिप्टो के स्लॉट्स भरे हुए हैं!")
+            send_telegram_msg("⚠️️ *[CRYPTO SLOTS FULL]* क्रिप्टो के स्लॉट्स भरे हुए हैं!")
             return None
     elif conf['category'] == 'FOREX' and forex_c >= MAX_FOREX_SLOTS:
         send_telegram_msg("⚠️ *[FOREX SLOTS FULL]* फॉरेक्स के स्लॉट्स भरे हुए हैं!")
@@ -543,7 +545,7 @@ def process_single_asset(name):
                     f"💰 *[{conf['tag']} TP1 HIT - 50% PARTIAL BOOKED]* 🎯\n"
                     f"✅ *Lot 1 Closed:* {trade['lot1_size']} {trade['vol_unit_str']} @ {current_price}\n"
                     f"💵 *Profit:* +31.25 USD\n"
-                    f"🛡️️ *SL Moved to Entry:* {entry} (Trade Risk-Free!)\n"
+                    f"🛡️ *SL Moved to Entry:* {entry} (Trade Risk-Free!)\n"
                     f"📊 *Global Net PnL:* {performance['today_pnl_usd']:+.2f} USD"
                 )
 
@@ -712,7 +714,7 @@ def listen_telegram_commands_master():
                     if chat_id != str(TELEGRAM_CHAT_ID):
                         continue
 
-                    # 1. PHOTO HANDLER (DIRECT CHART SCREENSHOT RECOGNITION)
+                    # 1. PHOTO HANDLER (DIRECT CHART SCREENSHOT RECOGNITION - SINGLE DIRECTION FOCUS)
                     if "photo" in msg:
                         photos = msg.get("photo", [])
                         best_photo = photos[-1]
@@ -741,7 +743,7 @@ def listen_telegram_commands_master():
                             l_str = ", ".join([f"{x}" for x in data.get('lows', [])]) or "None"
                             msg_out += f"*{asset}:*\n  🔺 *Highs:* {h_str}\n  🔻 *Lows:* {l_str}\n"
                         msg_out += (
-                            "-----------------------------\n📸 *Send ANY Chart Photo directly!* (Gemini Vision auto-scans)\n\n"
+                            "-----------------------------\\n📸 *Send ANY Chart Photo directly!* (Gemini Vision evaluates your exact setup)\\n\\n"
                             "ℹ️ *Commands:*\n"
                             "`/vet_trade GOLD BUY 4192.00 4185.65 4211.98`\n"
                             "`/set_highs BTC 87130`\n"
@@ -850,13 +852,13 @@ def check_and_send_daily_summary():
         save_json(PERF_FILE, performance)
 
 def run_trading_bot():
-    print("Master Algo Sniper with Gemini 3.8-Flash Active...", flush=True)
+    print("Master Algo Sniper with Single-Direction Gemini Vision Active...", flush=True)
     send_telegram_msg(
-        "🚀 *Master Algo Unified Sniper + Gemini 3.8-Flash Vision Online!* 👁️🧠\n"
+        "🚀 *Master Algo Unified Sniper + Single-Direction Gemini Vision Active!* 👁️🎯\n"
         "• Assets: BTC, GOLD, EURUSD, GBPUSD, USDJPY, USDCAD\n"
         "• Daily Circuit Breaker: -$100.00 Net (Max 4 Trades)\n"
         "• Slots: Max 4 Concurrent (2 Crypto/Gold + 2 Forex)\n"
-        "• 📸 *Direct Chart Vision:* Upload ANY chart photo directly! (Auto-Retry on Spikes Enabled)\n"
+        "• 📸 *Direct Chart Vision:* Upload ANY chart photo! Evaluates ONLY your specific trade intent (Buy/Sell) without confusion.\n"
         "• Send `/levels` anytime to check radar!"
     )
 
