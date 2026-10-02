@@ -251,8 +251,7 @@ def call_gemini(prompt_text, image_b64=None):
         return None
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={GEMINI_API_KEY}"
-    
-     headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json"}
         parts = []
         if image_b64:
             parts.append({
@@ -390,7 +389,7 @@ def create_master_split_trade(asset_key, side, entry, calculated_sl, custom_tp=N
     else: actual_sl = entry + effective_distance
 
     if effective_distance > conf['max_allowed_sl']:
-        send_telegram_msg(f"⚠️ *[{conf['tag']} TRADE SKIPPED - SL TOO LARGE]*\nSL Dist: {effective_distance:.5f} (Max: {conf['max_allowed_sl']})")
+        send_telegram_msg(f"⚠️️ *[{conf['tag']} TRADE SKIPPED - SL TOO LARGE]*\nSL Dist: {effective_distance:.5f} (Max: {conf['max_allowed_sl']})")
         return None
 
     if conf['is_forex']:
@@ -644,10 +643,10 @@ def handle_vet_trade(parts):
 
     conf = ASSETS[asset]
     if conf['active_trade'] is not None:
-        send_telegram_msg(f"⚠️️ *[{conf['tag']}]* Pehle se ek active trade chal raha hai!")
+        send_telegram_msg(f"⚠️ *[{conf['tag']}]* Pehle se ek active trade chal raha hai!")
         return
 
-    send_telegram_msg(f"🔍 *[AI VETTING IN PROGRESS - {conf['tag']}]*\nGemini 2.5 Flash live volume delta aur context analyze kar raha hai...")
+    send_telegram_msg(f"🔍 *[AI VETTING IN PROGRESS - {conf['tag']}]*\nGemini live volume delta aur context analyze kar raha hai...")
     df_15m = get_candles(conf['symbol'], '15m', limit=35)
     delta_val, vol_ratio, vol_status = calculate_volume_delta_profile(df_15m)
 
@@ -667,7 +666,7 @@ def handle_vet_trade(parts):
     """
     ai_verdict = call_gemini(prompt)
     if not ai_verdict:
-        send_telegram_msg("⚠️ *AI Service Error:* Analysis nahi ho paya.")
+        send_telegram_msg("⚠️️ *AI Service Error:* Analysis nahi ho paya.")
         return
 
     is_approved = "DECISION: APPROVED" in ai_verdict.upper()
@@ -676,7 +675,7 @@ def handle_vet_trade(parts):
         send_telegram_msg(f"✅ *[AI VETTING: APPROVED & EXECUTED]* 🎯\n{ai_verdict.strip()}\n-----------------------------")
         conf['active_trade'] = create_master_split_trade(asset, side, entry, sl, custom_tp=tp, trade_label="AI-VETTED ENTRY")
     else:
-        send_telegram_msg(f"❌ *[AI VETTING: REJECTED]* 🛡️️\n{ai_verdict.strip()}\n🚫 *Action:* Risk control ke teht trade nahi liya gaya.")
+        send_telegram_msg(f"❌ *[AI VETTING: REJECTED]* 🛡️\n{ai_verdict.strip()}\n🚫 *Action:* Risk control ke teht trade nahi liya gaya.")
 
 def listen_telegram_commands_master():
     global user_levels
