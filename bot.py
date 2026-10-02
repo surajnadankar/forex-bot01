@@ -251,7 +251,6 @@ def call_gemini(prompt_text, image_b64=None):
         print("GEMINI_API_KEY is empty!", flush=True)
         return None
     try:
-        # gemini-1.5-flash handles images and high-speed chat seamlessly without timeout
         model_name = "gemini-1.5-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
@@ -259,8 +258,8 @@ def call_gemini(prompt_text, image_b64=None):
         parts = []
         if image_b64:
             parts.append({
-                "inline_data": {
-                    "mime_type": "image/jpeg",
+                "inlineData": {
+                    "mimeType": "image/jpeg",
                     "data": image_b64
                 }
             })
