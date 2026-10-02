@@ -32,13 +32,13 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Master Institutional AI Sniper + Google Sheets Memory Sync Active 24/7!"
+    return "Master Institutional AI Sniper with Hardcoded Radars Active 24/7!"
 
 def start_web_server():
     app.run(host='0.0.0.0', port=10000)
 
 # =====================================================================
-# 3. GLOBAL RISK ENGINE & ACCOUNT LIMITS ($2,500 THE5ERS ACCOUNT)
+# 3. GLOBAL RISK ENGINE & PERMANENT RADAR LEVELS
 # =====================================================================
 exchange = ccxt.kraken({
     'enableRateLimit': True,
@@ -56,6 +56,54 @@ MAX_TOTAL_SLOTS = 4
 
 PERF_FILE = "master_performance.json"
 MAP_FILE = "master_market_map.json"
+
+# आपके द्वारा भेजे गए सभी सटीक की-लेवल्स और 4H टारगेट्स कोड में परमानेंट सेट हैं
+DEFAULT_MARKET_MAP = {
+    'BTC': {
+        'key_levels': [
+            61556.58, 73669.56, 75633.23, 76697.17, 78251.18, 79274.78, 
+            83628.36, 85686.88, 87701.49, 88982.81, 91193.63, 91711.6, 
+            92668.922, 93167.85, 96916.06, 98920.67, 101245.6, 102730.93, 
+            106474.49, 117802.73, 126192.07
+        ],
+        'h4_highs': [87345.85, 90385.0],
+        'h4_lows': [74988.74, 80240.59, 82679.42]
+    },
+    'GOLD': {
+        'key_levels': [
+            276.436, 2561.073, 2924.338, 3213.15, 3288.019, 3401.552, 
+            3917.805, 4231.59, 4519.006, 4666.543, 4868.081, 5451.16, 5602.225
+        ],
+        'h4_highs': [4399.14],
+        'h4_lows': [3959.981, 3996.199]
+    },
+    'EURUSD': {
+        'key_levels': [0.5633, 0.82311, 0.96756, 1.1459, 1.22827, 1.4102, 1.51442, 1.6038],
+        'h4_highs': [1.17075, 1.18448, 1.19227, 1.20728],
+        'h4_lows': [1.01829, 1.07362, 1.10763]
+    },
+    'GBPUSD': {
+        'key_levels': [
+            1.0545, 1.1832, 1.21, 1.2709, 1.301, 1.314, 
+            1.387, 1.593, 1.7191, 1.8331, 2.01, 2.1161, 2.446, 2.644
+        ],
+        'h4_highs': [1.3308, 1.3402, 1.3566, 1.3673],
+        'h4_lows': [1.301, 1.3098, 1.314]
+    },
+    'USDJPY': {
+        'key_levels': [76.161, 101.18, 127.22, 139.889, 146.478, 152.206, 160.201, 163.988],
+        'h4_highs': [158.994, 160.329, 163.988],
+        'h4_lows': [149.578, 152.206, 153.003, 156.498]
+    },
+    'USDCAD': {
+        'key_levels': [
+            0.90585, 0.94469, 1.06204, 1.2013, 1.29517, 1.34818, 
+            1.37708, 1.38291, 1.39812, 1.41546, 1.42964, 1.43952, 1.44514, 1.4542, 1.47937
+        ],
+        'h4_highs': [1.42964, 1.43952, 1.44514],
+        'h4_lows': [1.38974, 1.39812, 1.41546]
+    }
+}
 
 def load_json(filepath, default):
     if os.path.exists(filepath):
@@ -120,22 +168,13 @@ performance = load_json(PERF_FILE, {
     'daily_summary_sent': False
 })
 
-market_map = load_json(MAP_FILE, {
-    'BTC': {
-        'key_levels': [85686.0, 87701.0],      # Monthly / Daily Macro S/R Shields
-        'h4_highs': [87130.0],                  # 4H Swing Highs
-        'h4_lows': [82900.0]                    # 4H Swing Lows
-    },
-    'GOLD': {
-        'key_levels': [4185.0, 4250.0],
-        'h4_highs': [4231.0],
-        'h4_lows': [4170.0]
-    },
-    'EURUSD': {'key_levels': [], 'h4_highs': [], 'h4_lows': []},
-    'GBPUSD': {'key_levels': [], 'h4_highs': [], 'h4_lows': []},
-    'USDJPY': {'key_levels': [152.20, 160.20], 'h4_highs': [], 'h4_lows': []},
-    'USDCAD': {'key_levels': [], 'h4_highs': [], 'h4_lows': []}
-})
+market_map = load_json(MAP_FILE, DEFAULT_MARKET_MAP)
+
+# सुनिश्चित करें कि हार्डकोडेड लेवल्स कभी खाली न हों
+for k in DEFAULT_MARKET_MAP.keys():
+    if k not in market_map or not market_map[k].get('key_levels'):
+        market_map[k] = DEFAULT_MARKET_MAP[k]
+save_json(MAP_FILE, market_map)
 
 risk_guard = {
     'current_date': "",
@@ -287,7 +326,7 @@ def calculate_volume_delta_profile(df):
         return 0.0, 1.0, "NEUTRAL"
 
 # =====================================================================
-# 6. ROBUST GEMINI 3.8-FLASH MULTIMODAL & AUTO-RETRY ENGINE
+# 6. GEMINI 3.8-FLASH MULTIMODAL & COGNITIVE REASONING ENGINE
 # =====================================================================
 def call_gemini(prompt_text, image_b64=None):
     if not GEMINI_API_KEY:
@@ -324,6 +363,43 @@ def call_gemini(prompt_text, image_b64=None):
 
     return None
 
+# AI COGNITIVE REASONING AT DAILY/MONTHLY KEY-LEVEL
+def ask_ai_to_evaluate_key_level_entry(asset_name, level, df_15m, delta_val, vol_ratio, vol_status):
+    recent_candles = []
+    for i in range(-5, -1):
+        row = df_15m.iloc[i]
+        c_type = "GREEN" if row['close'] >= row['open'] else "RED"
+        recent_candles.append(f"O:{row['open']}, H:{row['high']}, L:{row['low']}, C:{row['close']} ({c_type})")
+
+    candles_str = "\n".join(recent_candles)
+    current_close = float(df_15m.iloc[-2]['close'])
+
+    prompt = f"""
+    You are an elite quantitative liquidity and smart money analyst for Suraj Nadankar's $2,500 The5ers prop account.
+    Market has interacted with a major Daily/Monthly Key-Level:
+    - Asset: {asset_name}
+    - Daily/Monthly Key-Level: {level}
+    - Current Candle Close: {current_close}
+    - Volume Delta: {delta_val} | Volume Ratio: {vol_ratio}x ({vol_status})
+    - Last 4 Closed 15M Candles:
+    {candles_str}
+
+    TASK:
+    Analyze the liquidity behavior around this Daily/Monthly level {level}:
+    1. Did price reject with long wicks (liquidity grab/fakeout), or is it slicing through with massive trend volume?
+    2. Assess candle momentum, wick dynamics, and delta sentiment.
+    3. Determine the SAFE trade:
+       - DECISION: BUY (if strong bullish bounce/absorption off support)
+       - DECISION: SELL (if strong bearish rejection/sweep of resistance)
+       - DECISION: WAIT (if price is choppy, indecisive, or slicing through without rejection)
+
+    Output format strictly:
+    DECISION: [BUY, SELL, or WAIT]
+    REASON: [Under 45 words in clean Hindi/Hinglish explaining smart money reaction at this Key-Level]
+    """
+    reply = call_gemini(prompt)
+    return reply
+
 def run_ai_trade_advisor(outcome, trade, current_price, delta_val, vol_ratio, vol_status):
     asset = trade['asset']
     side = trade['side']
@@ -351,7 +427,7 @@ def run_zero_trade_ai_audit():
     market_notes = []
     for asset, conf in ASSETS.items():
         data = market_map.get(asset, {})
-        market_notes.append(f"{asset}: Key-Levels (D/M)={data.get('key_levels', [])}, 4H-Highs={data.get('h4_highs', [])}, 4H-Lows={data.get('h4_lows', [])}")
+        market_notes.append(f"{asset}: Key-Levels (D/M)={len(data.get('key_levels', []))} levels, 4H-Highs={data.get('h4_highs', [])}, 4H-Lows={data.get('h4_lows', [])}")
 
     prompt = f"""
     You are a professional prop firm risk analyst evaluating today's session for Suraj Nadankar's $2,500 The5ers account.
@@ -360,7 +436,7 @@ def run_zero_trade_ai_audit():
     {market_notes}
 
     Analyze the day in clean Hindi/Hinglish (3 bullet points, under 85 words):
-    1. Aaj trades na milne ka mukhya kaaran (Market chop tha ya 4H key liquidity levels tak price nahi pahucha)?
+    1. Aaj trades na milne ka mukhya kaaran (Market chop tha ya 4H/Daily levels tak price nahi pahucha)?
     2. Daily/Monthly key levels ke context me price action ka flow kaisa tha?
     3. Kal ke session ke liye trader ke liye 1-2 practical tips.
     """
@@ -415,11 +491,11 @@ def create_master_split_trade(asset_key, side, entry, calculated_sl, custom_tp=N
     crypto_c, forex_c, total_c = get_slot_counts()
 
     if total_c >= MAX_TOTAL_SLOTS:
-        send_telegram_msg("⚠️️ *[SLOTS FULL]* कुल 4 ट्रेड्स पहले से एक्टिव हैं!")
+        send_telegram_msg("⚠️ *[SLOTS FULL]* कुल 4 ट्रेड्स पहले से एक्टिव हैं!")
         return None
     if conf['category'] == 'CRYPTO' and crypto_c >= MAX_CRYPTO_SLOTS and forex_c < MAX_FOREX_SLOTS:
         if total_c >= 3:
-            send_telegram_msg("⚠️️ *[CRYPTO SLOTS FULL]* क्रिप्टो के स्लॉट्स भरे हुए हैं!")
+            send_telegram_msg("⚠️ *[CRYPTO SLOTS FULL]* क्रिप्टो के स्लॉट्स भरे हुए हैं!")
             return None
     elif conf['category'] == 'FOREX' and forex_c >= MAX_FOREX_SLOTS:
         send_telegram_msg("⚠️ *[FOREX SLOTS FULL]* फॉरेक्स के स्लॉट्स भरे हुए हैं!")
@@ -493,8 +569,8 @@ def create_master_split_trade(asset_key, side, entry, calculated_sl, custom_tp=N
         f"📈 *Direction:* {side}\n"
         f"💵 *Entry:* {entry} | *Safe SL:* {actual_sl} (Risk: {risk_info})\n"
         f"💼 *Total Volume:* {calculated_lots} {vol_unit_str}\n"
-        f"   • *Lot 1:* {lot1} {vol_unit_str} (TP1: {tp1})\n"
-        f"   • *Lot 2:* {lot2} {vol_unit_str} (TP2: {tp2})\n"
+        f"   • *Lot 1:* {lot1} {vol_unit_str} (TP1 @ Half-Way: {tp1})\n"
+        f"   • *Lot 2:* {lot2} {vol_unit_str} (TP2 @ Target: {tp2})\n"
         f"🎯 *TP1 Target:* {tp1}\n"
         f"🏆 *TP2 Target:* {tp2}\n"
         f"🔒 *Max Risk:* $25.00 (1.0%)\n"
@@ -504,7 +580,7 @@ def create_master_split_trade(asset_key, side, entry, calculated_sl, custom_tp=N
     return trade
 
 # =====================================================================
-# 8. 3-TIER ENGINE & GOOGLE SHEET SYNC
+# 8. COMPLETE DUAL ENGINE: DAILY/MONTHLY AI ENTRIES + 4H SWEEPS
 # =====================================================================
 def process_single_asset(name):
     global performance, risk_guard, market_map
@@ -645,48 +721,64 @@ def process_single_asset(name):
                         conf['active_trade'] = create_master_split_trade(name, 'BUY', c_close_15m, sl, trade_label="MONDAY_FOREX_GAP_FILL")
                         return
 
-        # FEATURE B: 4H HIGHS/LOWS SWEEP + 15M 2-CANDLE ENTRY (AIDED BY MACRO KEY-LEVELS)
+        # FEATURE B: 4H HIGHS/LOWS SWEEPS (LIQUIDITY HUNTS)
         h4_highs = list(market_map.get(name, {}).get('h4_highs', []))
         h4_lows = list(market_map.get(name, {}).get('h4_lows', []))
-        key_shields = list(market_map.get(name, {}).get('key_levels', []))
 
         df_4h = get_candles(conf['symbol'], '4h', limit=10)
-        if df_4h is None or len(df_4h) < 4: return
+        if df_4h is not None and len(df_4h) >= 4:
+            last_4h = df_4h.iloc[-2]
+            curr_4h = df_4h.iloc[-1]
+            h4_cur_high = max(float(last_4h['high']), float(curr_4h['high']))
+            h4_cur_low = min(float(last_4h['low']), float(curr_4h['low']))
 
-        last_4h = df_4h.iloc[-2]
-        curr_4h = df_4h.iloc[-1]
-        h4_cur_high = max(float(last_4h['high']), float(curr_4h['high']))
-        h4_cur_low = min(float(last_4h['low']), float(curr_4h['low']))
+            # 4H High Sweep -> Sell Setup
+            for h_lvl in h4_highs:
+                swept_4h = (h4_cur_high >= h_lvl)
+                m15_c1_green = (p_high_15m >= h_lvl and p_close_15m > p_open_15m)
+                m15_c2_red = (c_close_15m < h_lvl and c_close_15m < c_open_15m)
 
-        # 4H HIGH SWEEP -> SELL SETUP
-        for h_lvl in h4_highs:
-            swept_4h = (h4_cur_high >= h_lvl)
-            m15_c1_green = (p_high_15m >= h_lvl and p_close_15m > p_open_15m)
-            m15_c2_red = (c_close_15m < h_lvl and c_close_15m < c_open_15m)
+                if swept_4h and m15_c1_green and m15_c2_red and conf['active_trade'] is None:
+                    sl = max(c_high_15m, p_high_15m) + conf['sl_buffer']
+                    send_telegram_msg(f"🎯 *[4H LIQUIDITY SWEEP CONFIRMED - SELL]*\n4H High {h_lvl} Swept + 15M Red Confirmation!")
+                    conf['active_trade'] = create_master_split_trade(name, 'SELL', c_close_15m, sl, trade_label="4H_SWEEP_15M_REVERSAL")
+                    market_map[name]['h4_highs'].remove(h_lvl)
+                    save_json(MAP_FILE, market_map)
+                    return
 
-            if swept_4h and m15_c1_green and m15_c2_red and conf['active_trade'] is None:
-                sl = max(c_high_15m, p_high_15m) + conf['sl_buffer']
-                shield_note = f" (Key-Levels Shield: {key_shields})" if key_shields else ""
-                send_telegram_msg(f"🎯 *[4H LIQUIDITY SWEEP CONFIRMED - SELL]*\n4H High {h_lvl} Swept + 15M Red Confirmation!{shield_note}")
-                conf['active_trade'] = create_master_split_trade(name, 'SELL', c_close_15m, sl, trade_label="4H_SWEEP_15M_REVERSAL")
-                market_map[name]['h4_highs'].remove(h_lvl)
-                save_json(MAP_FILE, market_map)
-                return
+            # 4H Low Sweep -> Buy Setup
+            for l_lvl in h4_lows:
+                swept_4h = (h4_cur_low <= l_lvl)
+                m15_c1_red = (p_low_15m <= l_lvl and p_close_15m < p_open_15m)
+                m15_c2_green = (c_close_15m > l_lvl and c_close_15m > c_open_15m)
 
-        # 4H LOW SWEEP -> BUY SETUP
-        for l_lvl in h4_lows:
-            swept_4h = (h4_cur_low <= l_lvl)
-            m15_c1_red = (p_low_15m <= l_lvl and p_close_15m < p_open_15m)
-            m15_c2_green = (c_close_15m > l_lvl and c_close_15m > c_open_15m)
+                if swept_4h and m15_c1_red and m15_c2_green and conf['active_trade'] is None:
+                    sl = min(c_low_15m, p_low_15m) - conf['sl_buffer']
+                    send_telegram_msg(f"🎯 *[4H LIQUIDITY SWEEP CONFIRMED - BUY]*\n4H Low {l_lvl} Swept + 15M Green Confirmation!")
+                    conf['active_trade'] = create_master_split_trade(name, 'BUY', c_close_15m, sl, trade_label="4H_SWEEP_15M_REVERSAL")
+                    market_map[name]['h4_lows'].remove(l_lvl)
+                    save_json(MAP_FILE, market_map)
+                    return
 
-            if swept_4h and m15_c1_red and m15_c2_green and conf['active_trade'] is None:
-                sl = min(c_low_15m, p_low_15m) - conf['sl_buffer']
-                shield_note = f" (Macro Daily/Monthly Support Shield Active: {key_shields})" if key_shields else ""
-                send_telegram_msg(f"🎯 *[4H LIQUIDITY SWEEP CONFIRMED - BUY]*\n4H Low {l_lvl} Swept + 15M Green Confirmation!{shield_note}")
-                conf['active_trade'] = create_master_split_trade(name, 'BUY', c_close_15m, sl, trade_label="4H_SWEEP_15M_REVERSAL")
-                market_map[name]['h4_lows'].remove(l_lvl)
-                save_json(MAP_FILE, market_map)
-                return
+        # FEATURE C: DAILY / MONTHLY KEY-LEVELS AI INDEPENDENT EXECUTION
+        key_levels = list(market_map.get(name, {}).get('key_levels', []))
+        for kl in key_levels:
+            kl_touched = (c_low_15m <= kl <= c_high_15m) or (p_low_15m <= kl <= p_high_15m)
+            if kl_touched and conf['active_trade'] is None:
+                delta_val, vol_ratio, vol_status = calculate_volume_delta_profile(df_15m)
+                ai_verdict = ask_ai_to_evaluate_key_level_entry(name, kl, df_15m, delta_val, vol_ratio, vol_status)
+
+                if ai_verdict:
+                    if "DECISION: BUY" in ai_verdict.upper():
+                        sl = min(c_low_15m, p_low_15m) - conf['sl_buffer']
+                        send_telegram_msg(f"🧠 *[AI APPROVED BUY AT DAILY/MONTHLY KEY-LEVEL {kl}]*\n{ai_verdict.strip()}")
+                        conf['active_trade'] = create_master_split_trade(name, 'BUY', c_close_15m, sl, trade_label=f"KEY_LEVEL_AI_BUY ({kl})")
+                        return
+                    elif "DECISION: SELL" in ai_verdict.upper():
+                        sl = max(c_high_15m, p_high_15m) + conf['sl_buffer']
+                        send_telegram_msg(f"🧠 *[AI APPROVED SELL AT DAILY/MONTHLY KEY-LEVEL {kl}]*\n{ai_verdict.strip()}")
+                        conf['active_trade'] = create_master_split_trade(name, 'SELL', c_close_15m, sl, trade_label=f"KEY_LEVEL_AI_SELL ({kl})")
+                        return
 
 # =====================================================================
 # 9. TELEGRAM COMMAND & PHOTO LISTENER (WITH FULL AUDIT REPORT)
@@ -715,7 +807,7 @@ def handle_vet_trade(parts):
 
     conf = ASSETS[asset]
     if conf['active_trade'] is not None:
-        send_telegram_msg(f"⚠️ *[{conf['tag']}]* Pehle se ek active trade chal raha hai!")
+        send_telegram_msg(f"⚠️️ *[{conf['tag']}]* Pehle se ek active trade chal raha hai!")
         return
 
     send_telegram_msg(f"🔍 *[AI VETTING IN PROGRESS - {conf['tag']}]*\nGemini 3.8-Flash live volume delta aur Google Sheet history analyze kar raha hai...")
@@ -732,7 +824,7 @@ def handle_vet_trade(parts):
     - Volume Delta: {delta_val} | Delta Sentiment: {vol_status}
     - Macro Key-Levels: {market_map.get(asset, {}).get('key_levels', [])}
     
-    PAST HISTORICAL MISTAKES & PERFORMANCE FROM GOOGLE SHEET:
+    PAST GOOGLE SHEET HISTORY:
     {sheet_memory}
 
     Evaluate with utmost risk caution:
@@ -798,20 +890,26 @@ def listen_telegram_commands_master():
                             "-----------------------------\n"
                         )
                         for asset, data in market_map.items():
-                            k_str = ", ".join([str(x) for x in data.get('key_levels', [])]) or "None"
+                            k_count = len(data.get('key_levels', []))
                             h_str = ", ".join([str(x) for x in data.get('h4_highs', [])]) or "None"
                             l_str = ", ".join([str(x) for x in data.get('h4_lows', [])]) or "None"
-                            msg_out += f"*{asset}:*\n  🛡️ *Key-Levels (Daily/Monthly):* `{k_str}`\n  🔺 *4H Highs (Sweep Targets):* `{h_str}`\n  🔻 *4H Lows (Sweep Targets):* `{l_str}`\n"
+                            msg_out += f"*{asset}:*\n  🛡️ *Key-Levels (Daily/Monthly):* {k_count} levels active\n  🔺 *4H Highs (Sweep Targets):* `{h_str}`\n  🔻 *4H Lows (Sweep Targets):* `{l_str}`\n"
                         msg_out += (
                             "-----------------------------\n"
-                            "ℹ️️ *Commands:*\n"
-                            "`/report` (Monthly/6-Month Google Sheet Live Ledger Audit)\n"
+                            "ℹ️ *Commands:*\n"
+                            "`/report` (Monthly/6-Month Google Sheet Live Audit)\n"
                             "`/set_key_levels BTC 85686, 87701`\n"
-                            "`/set_4h_highs BTC 87130`\n"
-                            "`/set_4h_lows BTC 82900`\n"
+                            "`/set_4h_highs BTC 87345` | `/set_4h_lows BTC 82679`\n"
+                            "`/reset_levels` (Hardcoded original radars par wapas set karein)\n"
                             "`/clear BTC` | `/vet_trade ...` | `/ask_ai ...`"
                         )
                         send_telegram_msg(msg_out)
+
+                    # हार्डकोडेड ओरिजिनल लेवल्स रीस्टोर कमांड
+                    elif cmd == "/reset_levels":
+                        market_map = dict(DEFAULT_MARKET_MAP)
+                        save_json(MAP_FILE, market_map)
+                        send_telegram_msg("✅ *[RADAR RESET COMPLETED]*\nसभी 6 एसेट्स के ओरिजिनल हार्डकोडेड लेवल्स रीस्टोर हो गए!")
 
                     # GOOGLE SHEET से 6-महीने का लाइव ऑडिट
                     elif cmd == "/report":
@@ -850,7 +948,7 @@ def listen_telegram_commands_master():
                                 )
                                 send_telegram_msg(report_msg)
                             except Exception as e:
-                                send_telegram_msg(f"⚠️ रिपोर्ट विश्लेषण एरर: {e}")
+                                send_telegram_msg(f"⚠️️ रिपोर्ट विश्लेषण एरर: {e}")
 
                     elif cmd == "/set_key_levels":
                         if len(parts) >= 3:
@@ -907,7 +1005,7 @@ def listen_telegram_commands_master():
                             if ai_reply:
                                 send_telegram_msg(f"🤖 *[GEMINI AI MENTOR]*\n{ai_reply.strip()}")
                         else:
-                            send_telegram_msg("ℹ️ Sawal puchne ke liye aise likhein: `/ask_ai GOLD me retracement par entry safe hai kya?`")
+                            send_telegram_msg("ℹ️️ Sawal puchne ke liye aise likhein: `/ask_ai GOLD me retracement par entry safe hai kya?`")
 
         except Exception as e:
             print(f"Telegram listener error: {e}", flush=True)
@@ -956,15 +1054,14 @@ def check_and_send_daily_summary():
         save_json(PERF_FILE, performance)
 
 def run_trading_bot():
-    print("Master Algo Sniper Online with Google Sheet Memory...", flush=True)
+    print("Master Algo Sniper Online with Hardcoded Radars...", flush=True)
     send_telegram_msg(
         "🚀 *Master Algo Institutional 3-Tier Sniper Online!* 🧠📊🎯\n"
-        "• Tier 1: Daily/Monthly Key-Level Shields (Macro Context)\n"
-        "• Tier 2: 4H Highs/Lows Sweeps (Liquidity Triggers)\n"
-        "• Tier 3: 15M Strict 2-Candle Confirmation (Execution)\n"
-        "• Strategy 1: 4H Sweeps | Strategy 2: Monday Gap-Fill | Strategy 3: User Chart Vision\n"
+        "• All 6 Asset Radars (Daily/Monthly + 4H Highs/Lows) are permanently hardcoded!\n"
+        "• Daily/Monthly Key-Levels AI Execution Active (Gemini autonomously trades bounces/rejections)!\n"
+        "• 4H Liquidity Sweeps + Monday Forex Gap-Fill + User Chart Vision Active!\n"
         "• Google Sheet Live Permanent Memory Active!\n"
-        "• Send `/report` anytime to view complete 6-month historical ledger!"
+        "• Send `/levels` or `/report` anytime!"
     )
 
     while True:
