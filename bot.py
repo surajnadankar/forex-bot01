@@ -31,7 +31,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Master Algo Sniper with Gemini Vision Chart Analyst Active 24/7!"
+    return "Master Algo Sniper with Robust Gemini Vision & Text AI Active 24/7!"
 
 def start_web_server():
     app.run(host='0.0.0.0', port=10000)
@@ -87,10 +87,10 @@ performance = load_json(PERF_FILE, {
 
 user_levels = load_json(LEVELS_FILE, {
     'BTC': {'highs': [87130.0], 'lows': [82900.0, 80150.0, 75560.0]},
-    'GOLD': {'highs': [], 'lows': []},
+    'GOLD': {'highs': [4380.0, 4663.0, 4868.0, 5451.0, 5602.0], 'lows': [3288.0, 3944.0]},
     'EURUSD': {'highs': [], 'lows': []},
     'GBPUSD': {'highs': [], 'lows': []},
-    'USDJPY': {'highs': [], 'lows': []},
+    'USDJPY': {'highs': [160.201, 163.988], 'lows': [76.161, 101.18, 127.22, 139.889, 146.478, 152.206]},
     'USDCAD': {'highs': [], 'lows': []}
 })
 
@@ -244,14 +244,18 @@ def calculate_volume_delta_profile(df):
         return 0.0, 1.0, "NORMAL"
 
 # =====================================================================
-# 6. GEMINI MULTIMODAL VISION & POST-TRADE AI ENGINE
+# 6. ROBUST GEMINI MULTIMODAL VISION & AI REASONER
 # =====================================================================
 def call_gemini(prompt_text, image_b64=None):
     if not GEMINI_API_KEY:
+        print("GEMINI_API_KEY is empty!", flush=True)
         return None
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
+        # gemini-1.5-flash handles images and high-speed chat seamlessly without timeout
+        model_name = "gemini-1.5-flash"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
+        
         parts = []
         if image_b64:
             parts.append({
@@ -261,13 +265,15 @@ def call_gemini(prompt_text, image_b64=None):
                 }
             })
         parts.append({"text": prompt_text})
+        
         payload = {"contents": [{"parts": parts}]}
-        res = requests.post(url, headers=headers, json=payload, timeout=35)
+        res = requests.post(url, headers=headers, json=payload, timeout=40)
+        
         if res.status_code == 200:
             data = res.json()
             return data['candidates'][0]['content']['parts'][0]['text']
         else:
-            print(f"Gemini API error: {res.status_code} - {res.text}", flush=True)
+            print(f"Gemini API error ({res.status_code}): {res.text}", flush=True)
             return None
     except Exception as e:
         print(f"Gemini connection error: {e}", flush=True)
@@ -320,44 +326,46 @@ def run_zero_trade_ai_audit():
         send_telegram_msg(f"🧠 *[GEMINI DAILY SESSION COACH & MARKET AUDIT]*\n{ai_resp.strip()}")
 
 def analyze_user_chart_screenshot(file_id, user_caption=""):
-    send_telegram_msg("🔍 *[GEMINI VISION ANALYZING YOUR CHART...]*\nचार्ट का स्ट्रक्चर, ट्रेंडलाइन्स, सपोर्ट/रेजिस्टेंस और दोतरफ़ा (BUY/SELL) ब्रेकआउट पाथवे स्कैन हो रहे हैं...")
+    send_telegram_msg("🔍 *[GEMINI VISION ANALYZING YOUR CHART...]*\nचार्ट का स्ट्रक्चर, लेवल्स, कैंडल्स और दोनों तरफ़ के ब्रेकआउट/बाउंस पाथवे स्कैन हो रहे हैं...")
     try:
         f_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
-        f_res = requests.get(f_url, timeout=15).json()
+        f_res = requests.get(f_url, timeout=20).json()
         if not f_res.get("ok"):
-            send_telegram_msg("❌ फ़ोटो डाउनलोड करने में समस्या आई, कृपया दोबारा भेजें।")
+            send_telegram_msg("❌ Telegram से इमेज फ़ाइल लोड नहीं हो सकी, कृपया दोबारा भेजें।")
             return
         file_path = f_res["result"]["file_path"]
 
         dl_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
-        img_bytes = requests.get(dl_url, timeout=20).content
+        img_bytes = requests.get(dl_url, timeout=25).content
         img_b64 = base64.b64encode(img_bytes).decode('utf-8')
 
         prompt = f"""
-        You are a quantitative institutional trader and technical chart mentor for a $2,500 The5ers prop account.
+        You are an elite quantitative prop firm risk mentor for Suraj Nadankar's $2,500 The5ers account.
         User submitted an image of their TradingView chart. User notes/caption: "{user_caption}"
 
-        Carefully analyze the chart image:
-        1. Identify the asset name (e.g. GOLD / XAUUSD, BTC, EURUSD, etc.) and timeframe shown.
-        2. Identify the pattern structure (Ascending Channel, Bear/Bull Flag, Wedge, S/R Range).
-        3. Formulate BOTH SCENARIOS with realistic price values directly read from the chart axes:
+        Carefully examine the chart image:
+        1. Identify the Asset (GOLD / XAUUSD, BTC, EURUSD, etc.) and timeframe shown.
+        2. Identify key patterns (Channel, Flag, Wedge, S/R zone, wick rejections, liquidity pools).
+        3. Formulate BOTH SCENARIOS with realistic price numbers directly read from the chart:
            - 🟢 SCENARIO 1 (BULLISH / BOUNCE or BREAKOUT):
-             • Condition: (e.g. bounce from lower trendline/support)
+             • Setup condition (e.g. bounce from support / breakout above level)
              • Exact Entry, Stop Loss, Take Profit
              • 1% Risk ($25.00) calculated Lot size
-           - 🔴 SCENARIO 2 (BEARISH / BREAKDOWN & RETEST):
-             • Condition: (e.g. breakdown below lower trendline & failed retest)
+           - 🔴 SCENARIO 2 (BEARISH / BREAKDOWN or RETEST):
+             • Setup condition (e.g. trendline break & retest rejection)
              • Exact Entry, Stop Loss, Take Profit
              • 1% Risk ($25.00) calculated Lot size
-        4. Give direct ready-to-copy commands for BOTH scenarios so user can easily execute whichever triggers!
+        4. Provide ready-to-copy commands for BOTH scenarios so user can easily execute whichever triggers:
+           `/vet_trade <PAIR> BUY <ENTRY> <SL> <TP>`
+           `/vet_trade <PAIR> SELL <ENTRY> <SL> <TP>`
 
-        Format strictly in polite, clear Hindi/Hinglish with bold formatting. Keep analysis extremely structured and under 150 words.
+        Write clearly in clean, structured Hindi/Hinglish with bold formatting (under 160 words).
         """
         analysis = call_gemini(prompt, image_b64=img_b64)
         if analysis:
             send_telegram_msg(f"📊 *[GEMINI AI CHART VISION REPORT]*\n\n{analysis.strip()}")
         else:
-            send_telegram_msg("⚠️ AI चार्ट का विश्लेषण नहीं कर सका, कृपया स्पष्ट स्क्रीनशॉट भेजें।")
+            send_telegram_msg("⚠️ AI चार्ट का विश्लेषण नहीं कर सका। कृपया स्पष्ट स्क्रीनशॉट दोबारा भेजें।")
 
     except Exception as e:
         print(f"Chart vision handling error: {e}", flush=True)
@@ -389,7 +397,7 @@ def create_master_split_trade(asset_key, side, entry, calculated_sl, custom_tp=N
     else: actual_sl = entry + effective_distance
 
     if effective_distance > conf['max_allowed_sl']:
-        send_telegram_msg(f"⚠️️ *[{conf['tag']} TRADE SKIPPED - SL TOO LARGE]*\nSL Dist: {effective_distance:.5f} (Max: {conf['max_allowed_sl']})")
+        send_telegram_msg(f"⚠️ *[{conf['tag']} TRADE SKIPPED - SL TOO LARGE]*\nSL Dist: {effective_distance:.5f} (Max: {conf['max_allowed_sl']})")
         return None
 
     if conf['is_forex']:
@@ -623,7 +631,8 @@ def process_single_asset(name):
 def handle_vet_trade(parts):
     if len(parts) < 6:
         send_telegram_msg(
-            "ℹ️ *Format:* `/vet_trade <PAIR> <BUY/SELL> <ENTRY> <SL> <TP>`"
+            "ℹ️ *Format:* `/vet_trade <PAIR> <BUY/SELL> <ENTRY> <SL> <TP>`\n"
+            "Example: `/vet_trade GOLD BUY 4192.00 4185.65 4211.98`"
         )
         return
 
@@ -646,7 +655,7 @@ def handle_vet_trade(parts):
         send_telegram_msg(f"⚠️ *[{conf['tag']}]* Pehle se ek active trade chal raha hai!")
         return
 
-    send_telegram_msg(f"🔍 *[AI VETTING IN PROGRESS - {conf['tag']}]*\nGemini live volume delta aur context analyze kar raha hai...")
+    send_telegram_msg(f"🔍 *[AI VETTING IN PROGRESS - {conf['tag']}]*\nGemini 1.5 Flash live volume delta aur context analyze kar raha hai...")
     df_15m = get_candles(conf['symbol'], '15m', limit=35)
     delta_val, vol_ratio, vol_status = calculate_volume_delta_profile(df_15m)
 
@@ -666,7 +675,7 @@ def handle_vet_trade(parts):
     """
     ai_verdict = call_gemini(prompt)
     if not ai_verdict:
-        send_telegram_msg("⚠️️ *AI Service Error:* Analysis nahi ho paya.")
+        send_telegram_msg("⚠️ *AI Service Error:* Analysis nahi ho paya.")
         return
 
     is_approved = "DECISION: APPROVED" in ai_verdict.upper()
@@ -675,7 +684,7 @@ def handle_vet_trade(parts):
         send_telegram_msg(f"✅ *[AI VETTING: APPROVED & EXECUTED]* 🎯\n{ai_verdict.strip()}\n-----------------------------")
         conf['active_trade'] = create_master_split_trade(asset, side, entry, sl, custom_tp=tp, trade_label="AI-VETTED ENTRY")
     else:
-        send_telegram_msg(f"❌ *[AI VETTING: REJECTED]* 🛡️\n{ai_verdict.strip()}\n🚫 *Action:* Risk control ke teht trade nahi liya gaya.")
+        send_telegram_msg(f"❌ *[AI VETTING: REJECTED]* 🛡️️\n{ai_verdict.strip()}\n🚫 *Action:* Risk control ke teht trade nahi liya gaya.")
 
 def listen_telegram_commands_master():
     global user_levels
@@ -727,7 +736,7 @@ def listen_telegram_commands_master():
                         msg_out += (
                             "-----------------------------\n📸 *Send ANY Chart Photo directly!* (Gemini Vision auto-scans)\n\n"
                             "ℹ️ *Commands:*\n"
-                            "`/vet_trade GOLD BUY 4189.50 4183.95 4205.78`\n"
+                            "`/vet_trade GOLD BUY 4192.00 4185.65 4211.98`\n"
                             "`/set_highs BTC 87130`\n"
                             "`/set_lows BTC 82900, 80150, 75560`\n"
                             "`/add_high GOLD 2685` | `/clear USDCAD`\n"
@@ -777,16 +786,16 @@ def listen_telegram_commands_master():
                         if user_question:
                             prompt = f"""
                             You are a trading partner and mentor for a $2,500 The5ers prop account.
-                            Strategy: 15M Key Level Sweeps, Volume Delta, Liquidity Grabs.
+                            Strategy: 15M/5M Key Level Sweeps, Retracements, Volume Delta, Liquidity Grabs.
                             The user Suraj asks you: "{user_question}"
                             
-                            Respond in polite, direct Hindi/Hinglish (under 90 words).
+                            Respond in polite, direct Hindi/Hinglish (under 90 words), acknowledging their setup and giving clear risk advice.
                             """
                             ai_reply = call_gemini(prompt)
                             if ai_reply:
                                 send_telegram_msg(f"🤖 *[GEMINI AI MENTOR]*\n{ai_reply.strip()}")
                         else:
-                            send_telegram_msg("ℹ️ Sawal puchne ke liye aise likhein: `/ask_ai BTC me entry lene ka sahi time kya tha?`")
+                            send_telegram_msg("ℹ️ Sawal puchne ke liye aise likhein: `/ask_ai GOLD me retracement par entry safe hai kya?`")
 
         except Exception as e:
             print(f"Telegram listener error: {e}", flush=True)
@@ -834,13 +843,13 @@ def check_and_send_daily_summary():
         save_json(PERF_FILE, performance)
 
 def run_trading_bot():
-    print("Master Algo Sniper with Gemini Vision Active...", flush=True)
+    print("Master Algo Sniper with Robust Gemini Active...", flush=True)
     send_telegram_msg(
-        "🚀 *Master Algo Unified Sniper + Gemini Vision AI Online!* 👁️🧠\n"
+        "🚀 *Master Algo Unified Sniper + Robust Gemini Vision AI Online!* 👁️🧠\n"
         "• Assets: BTC, GOLD, EURUSD, GBPUSD, USDJPY, USDCAD\n"
         "• Daily Circuit Breaker: -$100.00 Net (Max 4 Trades)\n"
         "• Slots: Max 4 Concurrent (2 Crypto/Gold + 2 Forex)\n"
-        "• 📸 *Direct Chart Vision:* Just upload ANY chart photo directly to Telegram!\n"
+        "• 📸 *Direct Chart Vision (Fixed):* Upload ANY chart photo directly!\n"
         "• Send `/levels` anytime to check radar!"
     )
 
