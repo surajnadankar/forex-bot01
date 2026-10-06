@@ -12,8 +12,8 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-import google.generativeai as genai
 import requests
+import yfinance as yf
 
 # =========================================================
 # 1. कॉन्फ़िगरेशन एवं पर्यावरण चर
@@ -23,7 +23,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "").strip()
 ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "").strip()
 
-# भारतीय मानक समय (IST) - बिना बाहरी लाइब्रेरी के
+# भारतीय मानक समय (IST)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # The5ers $2,500 High Stakes रिस्क पैरामीटर्स
@@ -31,15 +31,21 @@ ACCOUNT_BALANCE = 2500.00
 RISK_PER_TRADE_PERCENT = 0.01  # 1% फिक्स रिस्क ($25.00)
 FIXED_RISK_USD = ACCOUNT_BALANCE * RISK_PER_TRADE_PERCENT  # $25.00
 COMMISSION_BUFFER_USD = 1.50   # स्प्रेड व कमीशन बफ़र ($23.50 शुद्ध रिस्क)
-MAX_SL_PIPS = 40.0            # 40 पिप्स से बड़ा स्टॉप लॉस सीधे स्किप
+MAX_SL_PIPS = 40.0            # 40 पिप्स से बड़ा स्टॉप लॉस सीधे रिजेक्ट
 DAILY_CIRCUIT_BREAKER_USD = 100.00  # -$100 पर दैनिक ट्रेडिंग फ़्रीज़
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Gemini AI सेटअप
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# Yahoo Finance टिकर मैपिंग
+YF_TICKERS = {
+    "GOLD": "GC=F",
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "USDJPY": "JPY=X",
+    "USDCAD": "CAD=X",
+    "BTC": "BTC-USD"
+}
 
 # =========================================================
 # 2. मूल हार्डकोडेड 6 एसेट्स + 4H V-Shape रडार्स
@@ -72,7 +78,7 @@ DEFAULT_RADARS = {
     },
     "BTC": {
         "key_levels": [85686.0, 87701.0, 89500.0],
-        "4h_v_highs": [87345.0,87344],
+        "4h_v_highs": [87345.0],
         "4h_v_lows": [82679.0]
     }
 }
@@ -89,25 +95,82 @@ daily_stats = {
 }
 
 # =========================================================
-# 3. Render बैकग्राउंड वेब सर्वर (Port Binding Protection)
+# 3. Render बैकग्राउंड वेब सर्वर
 # =========================================================
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Suraj Institutional 2-Trigger 4H V-Shape Sniper Online."
+    return "Suraj Institutional Yahoo Finance + Delta Neutral Engine Online."
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
 # =========================================================
-# 4. 2-ट्रिगर ऑर्डर लॉट साइज़िंग और 1:3 RRR इंजन
+# 4. ऑटोमैटिक Yahoo Finance + डेल्टा न्यूट्रल ट्रैप इंजन
+# =========================================================
+def fetch_live_market_context(symbol: str = "GOLD") -> str:
+    """
+    Yahoo Finance से खुद 1D, 1H, और लाइव भाव/वॉल्यूम/डेल्टा न्यूट्रल फेच करता है
+    """
+    ticker_sym = YF_TICKERS.get(symbol.upper(), "GC=F")
+    try:
+        ticker = yf.Ticker(ticker_sym)
+        df_1h = ticker.history(period="5d", interval="1h")
+        df_1d = ticker.history(period="1mo", interval="1d")
+
+        if df_1h.empty:
+            return "⚠️ लाइव मार्केट डेटा अनुपलब्ध (मार्केट बंद या टिकर लोड नहीं हुआ)।"
+
+        live_price = float(df_1h['Close'].iloc[-1])
+        last_vol = float(df_1h['Volume'].iloc[-1])
+        avg_vol = float(df_1h['Volume'].tail(10).mean())
+        
+        vol_surge = round(last_vol / avg_vol, 2) if avg_vol > 0 else 1.0
+        
+        # 1D ट्रेंड
+        day_open = float(df_1d['Open'].iloc[-1])
+        day_trend = "BULLISH 🟢" if live_price > day_open else "BEARISH 🔴"
+        
+        # डेल्टा न्यूट्रल व एब्जॉर्प्शन चेक
+        c_open = float(df_1h['Open'].iloc[-1])
+        c_close = float(df_1h['Close'].iloc[-1])
+        c_high = float(df_1h['High'].iloc[-1])
+        c_low = float(df_1h['Low'].iloc[-1])
+        
+        candle_body = abs(c_close - c_open)
+        candle_range = c_high - c_low if (c_high - c_low) > 0 else 0.001
+        
+        # अगर वॉल्यूम बहुत भारी है (1.3x+) लेकिन बॉडी बहुत छोटी है (< 35% of range), 
+        # तो इसका मतलब भारी मात्रा में ऑर्डर्स टकराए हैं पर प्राइस नहीं हिली = डेल्टा न्यूट्रल एब्जॉर्प्शन ट्रैप
+        is_delta_neutral_trap = (vol_surge >= 1.3) and ((candle_body / candle_range) < 0.35)
+        
+        if is_delta_neutral_trap:
+            delta_analysis = "🚨 [DELTA NEUTRAL / ABSORPTION TRAP]: भारी वॉल्यूम पर भी भाव नहीं बढ़ रहा। बड़े खरीदार/विक्रेता ऑर्डर्स एब्जॉर्ब कर रहे हैं। बिना कन्फर्मेशन ब्रेकआउट पर सीधे एंट्री मत लेना!"
+        elif vol_surge >= 1.5:
+            delta_analysis = "✅ [HIGH VOLUME MOMENTUM]: आक्रामक ऑर्डर्स एक्टिव हैं। ब्रेकआउट या लेवल रिजेक्शन वास्तविक है।"
+        else:
+            delta_analysis = "⚠️ [DRY VOLUME]: बाज़ार में पार्टिसिपेशन कम है, फेकआउट से सावधान रहें।"
+
+        return (
+            f"📊 **[YAHOO FINANCE LIVE REAL-TIME AUDIT - {symbol}]**\n"
+            f"• लाइव भाव (Current Price): {live_price:.2f}\n"
+            f"• 1D डेली ट्रेंड: {day_trend}\n"
+            f"• 1H वॉल्यूम सर्ज: {vol_surge}x (औसत के मुकाबले)\n"
+            f"• डेल्टा व लिक्विडिटी स्थिति: {delta_analysis}\n"
+        )
+    except Exception as e:
+        logger.error(f"Yahoo Finance Fetch Error: {str(e)}")
+        return f"⚠️ लाइव डेटा फेच में समस्या: {str(e)}"
+
+# =========================================================
+# 5. 2-ट्रिगर ऑर्डर लॉट साइज़िंग और 1:3 RRR इंजन
 # =========================================================
 def calculate_split_lot_sizes(symbol: str, sl_pips: float):
     if sl_pips <= 0:
         return 0.01, 0.01
-    net_risk = FIXED_RISK_USD - COMMISSION_BUFFER_USD
+    net_risk = FIXED_RISK_USD - COMMISSION_BUFFER_USD  # $23.50
     pip_val = 7.14 if "CAD" in symbol.upper() else 10.0
     dollar_risk_per_std_lot = sl_pips * pip_val
     total_lot = round(net_risk / dollar_risk_per_std_lot, 2)
@@ -116,105 +179,90 @@ def calculate_split_lot_sizes(symbol: str, sl_pips: float):
     lot_2 = round(total_lot - lot_1, 2)
     return max(0.01, lot_1), max(0.01, lot_2)
 
-def calculate_trade_targets(entry: float, sl: float, direction: str):
-    sl_dist = abs(entry - sl)
-    if direction.upper() == "BUY":
-        tp1 = entry + sl_dist         # 1:1 RRR (50% Book -> SL to Entry)
-        tp2 = entry + (sl_dist * 3)   # 1:3 RRR (Runner)
-        tp3 = entry + (sl_dist * 5)   # 1:5 RRR (Extended Runner)
-    else:
-        tp1 = entry - sl_dist         # 1:1 RRR
-        tp2 = entry - (sl_dist * 3)   # 1:3 RRR
-        tp3 = entry - (sl_dist * 5)   # 1:5 RRR
-    return round(tp1, 5), round(tp2, 5), round(tp3, 5)
-
 # =========================================================
-# 5. 4H V-SHAPE -> 15M SHIFT STRATEGY CORE LOGIC
+# 6. Direct REST AI Engine (Text + Vision + YF + Delta)
 # =========================================================
-def check_4h_vshape_and_15m_trigger(symbol: str, candle_15m: dict):
-    c_low = float(candle_15m['low'])
-    c_high = float(candle_15m['high'])
-    c_close = float(candle_15m['close'])
-    radar = MASTER_RADARS.get(symbol, {})
-    
-    # 4H V-Shape Low स्वीप (BUY सेटअप)
-    for v_low in radar.get("4h_v_lows", []):
-        if c_low < v_low and c_close > v_low:
-            sl_price = c_low - (0.0004 if "JPY" not in symbol else 0.04)
-            return True, "BUY", v_low, "4H V-Shape Low", c_close, sl_price
-
-    # 4H V-Shape High स्वीप (SELL सेटअप)
-    for v_high in radar.get("4h_v_highs", []):
-        if c_high > v_high and c_close < v_high:
-            sl_price = c_high + (0.0004 if "JPY" not in symbol else 0.04)
-            return True, "SELL", v_high, "4H V-Shape High", c_close, sl_price
-
-    return False, None, None, None, None, None
-
-# =========================================================
-# 6. AI विश्लेषण इंजन (Auto Fallback - Zero 404 Error)
-# =========================================================
-def call_gemini_smart(prompt_parts: list) -> str:
+def query_gemini_rest(prompt_text: str, image_bytes: bytes = None) -> str:
     if not GEMINI_API_KEY:
         return "⚠️ Gemini API Key Render Environment में नहीं मिली।"
+
+    import base64
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
-    candidate_models = ["gemini-1.5-flash", "gemini-flash-latest", "gemini-pro"]
-    last_err = ""
-    for m_name in candidate_models:
-        try:
-            m = genai.GenerativeModel(m_name)
-            resp = m.generate_content(prompt_parts)
-            if resp and resp.text:
-                return resp.text.strip()
-        except Exception as e:
-            last_err = str(e)
-            continue
-            
-    return f"❌ AI इंजन एरर: {last_err}"
+    parts = [{"text": prompt_text}]
+    if image_bytes:
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": base64.b64encode(image_bytes).decode('utf-8')
+            }
+        })
+    
+    payload = {"contents": [{"parts": parts}]}
+    headers = {"Content-Type": "application/json"}
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        res_json = response.json()
+        
+        if "candidates" in res_json and len(res_json["candidates"]) > 0:
+            return res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+        elif "error" in res_json:
+            return f"❌ AI एरर: {res_json['error'].get('message', 'Unknown Error')}"
+        return "⚠️ AI से कोई विश्लेषण प्राप्त नहीं हुआ।"
+    except Exception as e:
+        return f"❌ नेटवर्क / API एरर: {str(e)}"
 
-def query_gemini_analysis(user_query: str) -> str:
-    system_prompt = (
-        "Role: Strict Institutional Risk Manager for $2,500 The5ers High Stakes.\n"
-        "Rules: 2 Trigger Orders execution. Lot 1 at 1:1 TP1. On TP1 hit, SL moves to Breakeven (Entry). "
-        "Lot 2 runs for 1:3 RRR (TP2). Max SL 40 Pips.\n"
-        "Give direct concise analysis in Sentence 1 with exact calculated Entry, SL, TP1 (1:1), and TP2 (1:3)."
-    )
-    return call_gemini_smart([system_prompt, user_query])
+def process_trade_evaluation(text_query: str = "", image_bytes: bytes = None) -> str:
+    detected_symbol = "GOLD"
+    for s in ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "BTC"]:
+        if s in text_query.upper():
+            detected_symbol = s
+            break
 
-def query_gemini_vision(image_bytes: bytes, caption: str = "") -> str:
-    vision_prompt = (
-        "Scan this trading chart for 4H V-Shape swing highs/lows and 15M candle rejection wicks. "
-        "Confirm user BUY/SELL intent. State Entry, SL, TP1 (1:1), and TP2 (1:3 RRR)."
+    # 1. Yahoo Finance से लाइव डेटा और डेल्टा न्यूट्रल खुद खींचना
+    live_context = fetch_live_market_context(detected_symbol)
+    radar = MASTER_RADARS.get(detected_symbol, {})
+
+    system_context = (
+        "You are an Elite Institutional Risk Manager for a $2,500 The5ers High Stakes account.\n"
+        "You MUST evaluate the user's trading idea/chart against the LIVE MARKET DATA fetched from Yahoo Finance below:\n\n"
+        f"{live_context}\n"
+        f"Master 4H V-Highs: {radar.get('4h_v_highs', [])}\n"
+        f"Master 4H V-Lows: {radar.get('4h_v_lows', [])}\n"
+        f"Key-Levels: {radar.get('key_levels', [])}\n\n"
+        "Strict Trading Rules:\n"
+        "1. DO NOT simply repeat what the user said. Critically judge if the trade makes sense right now.\n"
+        "2. If Delta Neutral / Absorption Trap is detected or volume is dry, warn the user and advice to WAIT.\n"
+        "3. 2-Trigger Orders Execution: Lot 1 closes at 1:1 TP1 (50% partial book) and remaining SL moves to Breakeven (Entry). Lot 2 runs for 1:3 RRR (TP2).\n"
+        "4. Max SL 40 Pips rule. Account Risk is fixed at 1% ($25.00).\n\n"
+        "Respond in this EXACT structured Hindi/Hinglish format:\n"
+        "🎯 **निर्णय (Decision):** [APPROVED BUY / APPROVED SELL / WAIT / REJECT TRAP]\n"
+        "📊 **लाइव मार्केट व डेल्टा स्थिति:** [Mention 1D trend and whether Delta Neutral Trap is present]\n"
+        "🔍 **चार्ट संरचना (Identified Structure):** [4H V-Shape Sweep / Breakout Retest / Chart Pattern]\n"
+        "🔹 **एंट्री (Entry Price):** [Price]\n"
+        "🛑 **स्टॉप लॉस (Stop Loss):** [Price] (Max 40 pips check)\n"
+        "🎯 **टारगेट 1 (1:1 RRR - 50% Book):** [Price] (यहाँ 50% कटेगा और SL एंट्री पर शिफ्ट होगा)\n"
+        "🚀 **टारगेट 2 (1:3 RRR - Runner):** [Price] (मुख्य रनर)\n"
+        "💡 **सीधा फैसला (Clear Verdict):** [1-2 lines clearly stating whether to take trade now or avoid]"
     )
-    image_part = {
-        "mime_type": "image/jpeg",
-        "data": image_bytes
-    }
-    content = [vision_prompt]
-    if caption:
-        content.append(f"User note: {caption}")
-    content.append(image_part)
-    return call_gemini_smart(content)
+    full_prompt = f"{system_context}\n\nUser Message/Notes:\n{text_query}" if text_query else system_context
+    return query_gemini_rest(full_prompt, image_bytes)
 
 # =========================================================
-# 7. टेलीग्राम कमांड हैंडलर्स
+# 7. टेलीग्राम कमांड व मैसेज हैंडलर्स
 # =========================================================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "🚀 *Master Algo Institutional 2-Trigger Sniper Live!*\n"
+        "🚀 *Master Algo Institutional Live Sniper Engine!*\n"
         "-------------------------------------\n"
-        "• 4H V-Shape Sweeps -> 15M Shift Execution Active\n"
-        "• 2 Trigger Orders: Lot 1 (1:1 TP1) | Lot 2 (1:3 TP2 Runner)\n"
-        "• Breakeven Auto-Shield: TP1 पर SL Entry पे शिफ्ट\n"
-        "• सोमवार गैप-फ़िल + 11:30 PM EOD Google Sheet सिंक\n"
-        "• The5ers $2,500 Protection: 1% ($25) Risk | -$100 Breaker\n\n"
-        "कमांड्स:\n"
-        "`/levels` - सभी 6 एसेट्स के 4H V-Shape व Key-Levels\n"
+        "• Yahoo Finance लाइव मार्केट डेटा (1D Trend + 1H Volume) ऑटो-स्कैन\n"
+        "• डेल्टा न्यूट्रल और एब्जॉर्प्शन ट्रैप फ़िल्टर एक्टिव\n"
+        "• 4H V-Shape स्वीप + 15M कैंडल रिजेक्शन + 2-Trigger Orders (1:1 & 1:3 RRR)\n"
+        "• फोटो (चार्ट) या सीधे टेक्स्ट में मैसेज भेजें, AI लाइव डेटा से क्रॉस-चेक करके जवाब देगा!\n\n"
+        "`/levels` - 4H V-Shape व Key-Levels देखें\n"
         "`/status` - खाता रिस्क स्थिति\n"
-        "`/report` - डेली मास्टर ऑडिट\n"
-        "`/ask_ai [सवाल]` - AI सेटअप पुष्टि\n"
-        "`/set_4h_highs BTC 87345` | `/set_4h_lows BTC 82679`\n"
-        "`/reset_levels` - मूल रडार वापस सेट करें"
+        "`/report` - डेली मास्टर ऑडिट रिपोर्ट"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -246,74 +294,47 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 *[GLOBAL MASTER END OF DAY REPORT]*\n"
         f"📅 Date: {today_str}\n"
         f"-------------------------------------\n"
-        f"🔢 Total Trades Today: {daily_stats['total_trades']}\n"
-        f"✅ Wins: {daily_stats['wins']} | ❌ Losses: {daily_stats['losses']}\n"
-        f"🎯 Today Win Rate: {win_rate:.1f}%\n"
-        f"💰 Today Net Realized PnL: ${daily_stats['net_pnl']:.2f} USD (Max Loss Cap: -$100.00)\n"
-        f"🏛️ All-Time Evaluation Score: ${daily_stats['net_pnl']:.2f} USD"
+        f"🔢 Total Trades: {daily_stats['total_trades']}\n"
+        f"🎯 Win Rate: {win_rate:.1f}%\n"
+        f"💰 Net Realized PnL: ${daily_stats['net_pnl']:.2f} USD\n"
+        f"🏛 Account Score: ${daily_stats['net_pnl']:.2f} USD"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def set_4h_highs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        parts = context.args
-        sym = parts[0].upper()
-        highs = [float(x.strip()) for x in "".join(parts[1:]).split(",") if x.strip()]
-        if sym in MASTER_RADARS:
-            MASTER_RADARS[sym]["4h_v_highs"] = highs
-            await update.message.reply_text(f"✅ {sym} 4H V-Highs सेट: {highs}")
-    except Exception as e:
-        await update.message.reply_text(f"एरर: {str(e)}")
-
-async def set_4h_lows_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        parts = context.args
-        sym = parts[0].upper()
-        lows = [float(x.strip()) for x in "".join(parts[1:]).split(",") if x.strip()]
-        if sym in MASTER_RADARS:
-            MASTER_RADARS[sym]["4h_v_lows"] = lows
-            await update.message.reply_text(f"✅ {sym} 4H V-Lows सेट: {lows}")
-    except Exception as e:
-        await update.message.reply_text(f"एरर: {str(e)}")
-
-async def reset_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global MASTER_RADARS
-    MASTER_RADARS = json.loads(json.dumps(DEFAULT_RADARS))
-    await update.message.reply_text("🔄 सभी लेवल्स मूल 4H V-Shape पर रीसेट कर दिए गए हैं।")
-
-async def ask_ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    chat_id = update.effective_chat.id
-    clean_text = user_text.replace("/ask_ai", "").replace("...", "").strip()
-    
-    if not clean_text:
-        await update.message.reply_text("⚠️ सवाल लिखें: `/ask_ai Gold 4148 sell SL 4162`", parse_mode="Markdown")
-        return
-
-    await context.bot.send_message(chat_id=chat_id, text="🔍 4H V-Shape और 1:3 RRR का विश्लेषण तैयार हो रहा है...")
-    ans = query_gemini_analysis(clean_text)
-    await context.bot.send_message(chat_id=chat_id, text=ans)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     caption = update.message.caption or ""
-    await context.bot.send_message(chat_id=chat_id, text="👁️ [VISION SCANNING] 4H V-Shape स्वीप और 15M कैंडल स्कैन हो रही है...")
+    await context.bot.send_message(
+        chat_id=chat_id, 
+        text="👁️ [मार्केट ऑडिट चालू] Yahoo Finance से लाइव 1D ट्रेंड, वॉल्यूम और डेल्टा न्यूट्रल ट्रैप स्कैन किया जा रहा है..."
+    )
     try:
         photo_file = await update.message.photo[-1].get_file()
         photo_bytes = await photo_file.download_as_bytearray()
-        res = query_gemini_vision(bytes(photo_bytes), caption)
+        res = process_trade_evaluation(text_query=caption, image_bytes=bytes(photo_bytes))
         await context.bot.send_message(chat_id=chat_id, text=res)
     except Exception as e:
         await context.bot.send_message(chat_id=chat_id, text=f"⚠️ स्कैन एरर: {str(e)}")
 
-# =========================================================
-# 8. ग्लोबल एरर हैंडलर (No Error Handler Warning Fix)
-# =========================================================
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text.strip()
+    chat_id = update.effective_chat.id
+
+    if user_text.startswith('/'):
+        return
+
+    await context.bot.send_message(chat_id=chat_id, text="🔍 लाइव मार्केट डेटा फ़ेच कर डेल्टा न्यूट्रल व 1:3 RRR का विश्लेषण हो रहा है...")
+    try:
+        res = process_trade_evaluation(text_query=user_text, image_bytes=None)
+        await context.bot.send_message(chat_id=chat_id, text=res)
+    except Exception as e:
+        await context.bot.send_message(chat_id=chat_id, text=f"❌ विश्लेषण एरर: {str(e)}")
+
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.warning(f"नेटवर्क / इंटरनल हैंडलर अपडेट: {context.error}")
+    logger.warning(f"अपडेट नोटिस: {context.error}")
 
 # =========================================================
-# 9. रात 11:30 PM IST EOD रिपोर्ट शेड्यूलर
+# 8. रात 11:30 PM IST EOD रिपोर्ट शेड्यूलर
 # =========================================================
 async def send_nightly_eod(context: ContextTypes.DEFAULT_TYPE):
     target_chat = ALLOWED_CHAT_ID or context.job.chat_id
@@ -328,14 +349,13 @@ async def send_nightly_eod(context: ContextTypes.DEFAULT_TYPE):
         f"🔢 Total Trades Today: {daily_stats['total_trades']}\n"
         f"✅ Wins: {daily_stats['wins']} | ❌ Losses: {daily_stats['losses']}\n"
         f"🎯 Today Win Rate: {win_rate:.1f}%\n"
-        f"💰 Today Net Realized PnL: ${daily_stats['net_pnl']:.2f} USD (Max Loss Cap: -$100.00)\n"
-        f"🏛️ All-Time Evaluation Score: ${daily_stats['net_pnl']:.2f} USD\n\n"
-        f"ℹ️ Google Sheet Live Audit Synced."
+        f"💰 Today Net Realized PnL: ${daily_stats['net_pnl']:.2f} USD\n"
+        f"🏛 Evaluation Score: ${daily_stats['net_pnl']:.2f} USD"
     )
     await context.bot.send_message(chat_id=target_chat, text=msg, parse_mode="Markdown")
 
 # =========================================================
-# 10. मुख्य एक्ज़ीक्यूशन लूप
+# 9. मुख्य निष्पादन लूप
 # =========================================================
 def main():
     web_thread = threading.Thread(target=run_web_server, daemon=True)
@@ -348,28 +368,22 @@ def main():
         return
 
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-
-    # एरर हैंडलर रजिस्टर किया गया
     application.add_error_handler(global_error_handler)
 
     application.add_handler(CommandHandler("start", start_cmd))
     application.add_handler(CommandHandler("levels", levels_cmd))
     application.add_handler(CommandHandler("status", status_cmd))
     application.add_handler(CommandHandler("report", report_cmd))
-    application.add_handler(CommandHandler("set_4h_highs", set_4h_highs_cmd))
-    application.add_handler(CommandHandler("set_4h_lows", set_4h_lows_cmd))
-    application.add_handler(CommandHandler("reset_levels", reset_levels_cmd))
-    application.add_handler(CommandHandler("ask_ai", ask_ai_cmd))
-    application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^/ask_ai"), ask_ai_cmd))
+    
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
-    # रात 11:30 PM IST शेड्यूलर
     job_queue = application.job_queue
     if job_queue:
         eod_time = dtime(hour=23, minute=30, tzinfo=IST)
         job_queue.run_daily(send_nightly_eod, time=eod_time, name="nightly_eod")
 
-    logger.info("Master 2-Trigger 4H V-Shape Sniper इंजन सक्रिय है...")
+    logger.info("Yahoo Finance + Delta Neutral Integrated Sniper तैयार है...")
     application.run_polling()
 
 if __name__ == "__main__":
