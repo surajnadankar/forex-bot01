@@ -2,7 +2,6 @@ import os
 import json
 import logging
 import threading
-import traceback
 from datetime import datetime, time as dtime, timedelta, timezone
 from flask import Flask
 from telegram import Update
@@ -24,28 +23,23 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "").strip()
 ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "").strip()
 
-# भारतीय मानक समय (IST) - बिना किसी बाहरी लाइब्रेरी (pytz) के
+# भारतीय मानक समय (IST) - इन-बिल्ट (किसी बाहरी पैकेज की ज़रूरत नहीं)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # The5ers $2,500 High Stakes रिस्क पैरामीटर्स
 ACCOUNT_BALANCE = 2500.00
 RISK_PER_TRADE_PERCENT = 0.01  # 1% फिक्स रिस्क ($25.00)
 FIXED_RISK_USD = ACCOUNT_BALANCE * RISK_PER_TRADE_PERCENT  # $25.00
-COMMISSION_BUFFER_USD = 1.50   # स्प्रेड व कमीशन बफ़र
+COMMISSION_BUFFER_USD = 1.50   # स्प्रेड व कमीशन बफ़र ($23.50 नेट रिस्क)
 MAX_SL_PIPS = 40.0            # 40 पिप्स से बड़ा स्टॉप लॉस सीधे स्किप
 DAILY_CIRCUIT_BREAKER_USD = 100.00  # -$100 पर दैनिक ट्रेडिंग फ़्रीज़
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# AI मॉडल सेटअप (Stable Text & Vision)
+# Gemini AI सेटअप
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    text_model = genai.GenerativeModel("gemini-1.5-flash")
-    vision_model = genai.GenerativeModel("gemini-1.5-flash")
-else:
-    text_model = None
-    vision_model = None
 
 # =========================================================
 # 2. मूल हार्डकोडेड 6 एसेट्स + 4H V-Shape रडार्स
@@ -95,7 +89,7 @@ daily_stats = {
 }
 
 # =========================================================
-# 3. Render बैकग्राउंड वेब सर्वर
+# 3. Render बैकग्राउंड वेब सर्वर (Port Binding Protection)
 # =========================================================
 app = Flask(__name__)
 
@@ -113,13 +107,11 @@ def run_web_server():
 def calculate_split_lot_sizes(symbol: str, sl_pips: float):
     if sl_pips <= 0:
         return 0.01, 0.01
-    
     net_risk = FIXED_RISK_USD - COMMISSION_BUFFER_USD  # $23.50
     pip_val = 7.14 if "CAD" in symbol.upper() else 10.0
     dollar_risk_per_std_lot = sl_pips * pip_val
     total_lot = round(net_risk / dollar_risk_per_std_lot, 2)
     total_lot = max(0.02, total_lot)
-    
     lot_1 = round(total_lot / 2, 2)
     lot_2 = round(total_lot - lot_1, 2)
     return max(0.01, lot_1), max(0.01, lot_2)
@@ -145,13 +137,13 @@ def check_4h_vshape_and_15m_trigger(symbol: str, candle_15m: dict):
     c_close = float(candle_15m['close'])
     radar = MASTER_RADARS.get(symbol, {})
     
-    # 1. 4H V-Shape Low स्वीप (BUY सेटअप)
+    # 4H V-Shape Low स्वीप (BUY सेटअप)
     for v_low in radar.get("4h_v_lows", []):
         if c_low < v_low and c_close > v_low:
             sl_price = c_low - (0.0004 if "JPY" not in symbol else 0.04)
             return True, "BUY", v_low, "4H V-Shape Low", c_close, sl_price
 
-    # 2. 4H V-Shape High स्वीप (SELL सेटअप)
+    # 4H V-Shape High स्वीप (SELL सेटअप)
     for v_high in radar.get("4h_v_highs", []):
         if c_high > v_high and c_close < v_high:
             sl_price = c_high + (0.0004 if "JPY" not in symbol else 0.04)
@@ -177,45 +169,51 @@ def evaluate_monday_gap(symbol: str, friday_close: float, monday_open: float):
     return False, None
 
 # =========================================================
-# 7. AI विश्लेषण इंजन (Text & Image Vision)
+# 7. AI विश्लेषण इंजन (Auto Fallback Resolver - No 404 Ever)
 # =========================================================
-def query_gemini_analysis(user_query: str) -> str:
-    if not text_model:
+def call_gemini_smart(prompt_parts: list) -> str:
+    if not GEMINI_API_KEY:
         return "⚠️ Gemini API Key Render Environment में नहीं मिली।"
-    prompt = (
+    
+    # 404 से बचने के लिए प्राथमिकता सूची
+    candidate_models = ["gemini-1.5-flash", "gemini-flash-latest", "gemini-pro"]
+    last_err = ""
+    for m_name in candidate_models:
+        try:
+            m = genai.GenerativeModel(m_name)
+            resp = m.generate_content(prompt_parts)
+            if resp and resp.text:
+                return resp.text.strip()
+        except Exception as e:
+            last_err = str(e)
+            continue
+            
+    return f"❌ AI इंजन एरर: {last_err}"
+
+def query_gemini_analysis(user_query: str) -> str:
+    system_prompt = (
         "Role: Strict Institutional Risk Manager for $2,500 The5ers High Stakes.\n"
         "Rules: 2 Trigger Orders execution. Lot 1 at 1:1 TP1. On TP1 hit, SL moves to Breakeven (Entry). "
         "Lot 2 runs for 1:3 RRR (TP2). Max SL 40 Pips.\n"
         "Give direct concise analysis in Sentence 1 with exact calculated Entry, SL, TP1 (1:1), and TP2 (1:3)."
     )
-    try:
-        res = text_model.generate_content([prompt, user_query])
-        return res.text.strip() if res and res.text else "⚠️ AI से कोई उत्तर नहीं मिला।"
-    except Exception as e:
-        return f"❌ AI इंजन एरर: {str(e)}"
+    return call_gemini_smart([system_prompt, user_query])
 
 def query_gemini_vision(image_bytes: bytes, caption: str = "") -> str:
-    import io
-from PIL import Image
-
-def query_gemini_vision(image_bytes: bytes, caption: str = "") -> str:
-    if not vision_model:
-        return "⚠️ Gemini Vision मॉडल उपलब्ध नहीं है।"
     vision_prompt = (
         "Scan this trading chart for 4H V-Shape swing highs/lows and 15M candle rejection wicks. "
         "Confirm user BUY/SELL intent. State Entry, SL, TP1 (1:1), and TP2 (1:3 RRR)."
     )
-    try:
-        image = Image.open(io.BytesIO(image_bytes))
-        prompt_content = [vision_prompt]
-        if caption:
-            prompt_content.append(f"User Notes: {caption}")
-        prompt_content.append(image)
-        
-        res = vision_model.generate_content(prompt_content)
-        return res.text.strip() if res and res.text else "⚠️ AI चार्ट स्कैन नहीं कर सका।"
-    except Exception as e:
-        return f"❌ विज़न एरर: {str(e)}"
+    # बिना किसी बाहरी PIL पैकेज के शुद्ध इन-मेमोरी डिक्शनरी
+    image_part = {
+        "mime_type": "image/jpeg",
+        "data": image_bytes
+    }
+    content = [vision_prompt]
+    if caption:
+        content.append(f"User note: {caption}")
+    content.append(image_part)
+    return call_gemini_smart(content)
 
 # =========================================================
 # 8. टेलीग्राम कमांड हैंडलर्स
@@ -307,7 +305,7 @@ async def set_4h_lows_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reset_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global MASTER_RADARS
     MASTER_RADARS = json.loads(json.dumps(DEFAULT_RADARS))
-    await update.message.reply_text("🔄 सभी लेवल्स मूल हार्डकोडेड 4H V-Shape पर रीसेट कर दिए गए हैं।")
+    await update.message.reply_text("🔄 सभी लेवल्स मूल 4H V-Shape पर रीसेट कर दिए गए हैं।")
 
 async def ask_ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -382,7 +380,7 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^/ask_ai"), ask_ai_cmd))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    # रात 11:30 PM IST शेड्यूलर (इन-बिल्ट टाइमज़ोन आधारित)
+    # रात 11:30 PM IST शेड्यूलर
     job_queue = application.job_queue
     if job_queue:
         eod_time = dtime(hour=23, minute=30, tzinfo=IST)
