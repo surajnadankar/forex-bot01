@@ -100,13 +100,15 @@ def run_web_server():
     app.run(host="0.0.0.0", port=port)
 
 # =========================================================
-# 3. Yahoo Finance लाइव डेटा और डेल्टा न्यूट्रल स्कैनर
+# 3. Yahoo Finance लाइव डेटा (1D + 4H + 1H + डेल्टा न्यूट्रल)
 # =========================================================
 def fetch_live_market_context(symbol: str = "GOLD") -> str:
     ticker_sym = YF_TICKERS.get(symbol.upper(), "GC=F")
     try:
         ticker = yf.Ticker(ticker_sym)
+        # 1-घंटे का डेटा (वॉल्यूम व डेल्टा के लिए)
         df_1h = ticker.history(period="5d", interval="1h")
+        # 1-दिन का डेटा (डेली ट्रेंड के लिए)
         df_1d = ticker.history(period="1mo", interval="1d")
 
         if df_1h.empty:
@@ -118,9 +120,18 @@ def fetch_live_market_context(symbol: str = "GOLD") -> str:
         
         vol_surge = round(last_vol / avg_vol, 2) if avg_vol > 0 else 1.0
         
+        # 1D डेली ट्रेंड
         day_open = float(df_1d['Open'].iloc[-1])
         day_trend = "BULLISH 🟢" if live_price > day_open else "BEARISH 🔴"
         
+        # 4H कैंडल स्ट्रक्चर (पिछली 4 घंटों की 1H कैंडल्स को मिलाकर 4H का ट्रेंड)
+        df_4h_recent = df_1h.tail(4)
+        c_4h_open = float(df_4h_recent['Open'].iloc[0])
+        c_4h_high = float(df_4h_recent['High'].max())
+        c_4h_low = float(df_4h_recent['Low'].min())
+        trend_4h = "BULLISH 🟢" if live_price > c_4h_open else "BEARISH 🔴"
+        
+        # डेल्टा न्यूट्रल व एब्जॉर्प्शन चेक
         c_open = float(df_1h['Open'].iloc[-1])
         c_close = float(df_1h['Close'].iloc[-1])
         c_high = float(df_1h['High'].iloc[-1])
@@ -132,23 +143,23 @@ def fetch_live_market_context(symbol: str = "GOLD") -> str:
         is_delta_neutral_trap = (vol_surge >= 1.3) and ((candle_body / candle_range) < 0.35)
         
         if is_delta_neutral_trap:
-            delta_analysis = "🚨 [DELTA NEUTRAL TRAP ALERT]: भारी वॉल्यूम पर भी भाव अटका हुआ है। खरीदार/विक्रेता एब्जॉर्ब हो रहे हैं। सीधे ब्रेकडाउन/ब्रेकआउट पर एंट्री न लें!"
+            delta_analysis = "🚨 [DELTA NEUTRAL TRAP ALERT]: भारी वॉल्यूम पर भी भाव अटका हुआ है (Narrow Range)। खरीदार/विक्रेता एब्जॉर्ब हो रहे हैं।"
         elif vol_surge >= 1.5:
             delta_analysis = "✅ [HIGH VOLUME MOMENTUM]: आक्रामक ऑर्डर्स सक्रिय हैं।"
         else:
-            delta_analysis = "⚠️️ [DRY VOLUME]: बाज़ार में लिक्विडिटी कम है, फेकआउट संभव है।"
+            delta_analysis = "⚠️ [DRY VOLUME]: बाज़ार में लिक्विडिटी कम है, फेकआउट संभव है।"
 
         return (
             f"📊 **[YAHOO FINANCE LIVE REAL-TIME AUDIT - {symbol}]**\n"
             f"• लाइव भाव (Current Price): {live_price:.2f}\n"
             f"• 1D डेली ट्रेंड: {day_trend}\n"
+            f"• 4H कैंडल ट्रेंड: {trend_4h} (High: {c_4h_high:.2f}, Low: {c_4h_low:.2f})\n"
             f"• 1H वॉल्यूम सर्ज: {vol_surge}x (औसत के मुकाबले)\n"
             f"• डेल्टा स्थिति: {delta_analysis}\n"
         )
     except Exception as e:
         logger.error(f"Yahoo Finance Fetch Error: {str(e)}")
         return f"⚠️ लाइव डेटा फेच में समस्या: {str(e)}"
-
 # =========================================================
 # 4. Google Gemini 3 Series Engine (Active Gemini 3 Fallbacks)
 # =========================================================
