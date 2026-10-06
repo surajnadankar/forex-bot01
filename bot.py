@@ -167,7 +167,7 @@ def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
         return "⚠️ Gemini API Key Render Environment में नहीं मिली।"
 
     # सिर्फ और सिर्फ आधिकारिक रूप से चालू Gemini 3.8 Flash
-    model_endpoint = "models/gemini-3.8-flash"
+    model_endpoint = "models/gemini-3.5-flash-lite"
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_endpoint}:generateContent?key={GEMINI_API_KEY}"
     
     parts = [{"text": prompt_text}]
