@@ -41,8 +41,8 @@ logger = logging.getLogger(__name__)
 # AI मॉडल सेटअप (Stable Text & Vision)
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    text_model = genai.GenerativeModel("gemini-pro")
-    vision_model = genai.GenerativeModel("gemini-pro-vision")
+    text_model = genai.GenerativeModel("gemini-1.5-flash")
+    vision_model = genai.GenerativeModel("gemini-1.5-flash")
 else:
     text_model = None
     vision_model = None
