@@ -150,57 +150,15 @@ def fetch_live_market_context(symbol: str = "GOLD") -> str:
         return f"⚠️ लाइव डेटा फेच में समस्या: {str(e)}"
 
 # =========================================================
-# 4. डायनामिक मॉडल फाइंडर (Zero 404 Guarantee)
+# 4. Google Gemini 3.8 Flash Engine
 # =========================================================
-CACHED_WORKING_MODEL = None
-
-def get_live_working_gemini_model():
-    """
-    Google API से खुद पूछता है कि आपकी Key के लिए कौन-सा मॉडल एक्टिव है
-    ताकि कभी भी 404 Not Found न आए।
-    """
-    global CACHED_WORKING_MODEL
-    if CACHED_WORKING_MODEL:
-        return CACHED_WORKING_MODEL
-
-    list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
-    try:
-        r = requests.get(list_url, timeout=10)
-        data = r.json()
-        models = data.get("models", [])
-        
-        # generateContent सपोर्ट करने वाले मॉडल्स की खोज
-        candidates = []
-        for m in models:
-            methods = m.get("supportedGenerationMethods", [])
-            name = m.get("name", "")  # e.g. "models/gemini-2.0-flash"
-            if "generateContent" in methods:
-                candidates.append(name)
-        
-        # प्राथमिकता क्रम: 2.0-flash -> 2.5-flash -> flash -> pro
-        for c in candidates:
-            if "2.0-flash" in c or "flash" in c:
-                CACHED_WORKING_MODEL = c
-                logger.info(f"Dynamically Selected Model: {CACHED_WORKING_MODEL}")
-                return CACHED_WORKING_MODEL
-                
-        if candidates:
-            CACHED_WORKING_MODEL = candidates[0]
-            return CACHED_WORKING_MODEL
-    except Exception as e:
-        logger.error(f"Error listing models: {str(e)}")
-    
-    # फॉलबैक
-    return "models/gemini-2.0-flash"
-
 def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
     if not GEMINI_API_KEY:
         return "⚠️ Gemini API Key Render Environment में नहीं मिली।"
 
-    model_name = get_live_working_gemini_model()
-    # model_name में अगर 'models/' पहले से है तो उसे संभालें
-    clean_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
-    url = f"https://generativelanguage.googleapis.com/v1beta/{clean_model}:generateContent?key={GEMINI_API_KEY}"
+    # Google द्वारा निर्देशित आधिकारिक चालू मॉडल
+    model_endpoint = "models/gemini-3.8-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/{model_endpoint}:generateContent?key={GEMINI_API_KEY}"
     
     parts = [{"text": prompt_text}]
     if image_bytes:
@@ -222,12 +180,12 @@ def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
             return res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
         elif "error" in res_json:
             return f"❌ AI इंजन एरर: {res_json['error'].get('message', 'Unknown Error')}"
-        return "⚠️ AI से कोई विश्लेषण प्राप्त नहीं हुआ।"
+        return "⚠️️ AI से कोई विश्लेषण प्राप्त नहीं हुआ।"
     except Exception as e:
         return f"❌ नेटवर्क / API एरर: {str(e)}"
 
 # =========================================================
-# 5. ट्रेड ऑडिट और रिस्क इंजन
+# 5. ट्रेड ऑडिट और रिस्क इंजन (All Patterns + Volume/Delta)
 # =========================================================
 def evaluate_market_trade(text_query: str = "", image_bytes: bytes = None) -> str:
     detected_symbol = "GOLD"
@@ -236,7 +194,6 @@ def evaluate_market_trade(text_query: str = "", image_bytes: bytes = None) -> st
             detected_symbol = s
             break
 
-    # Yahoo Finance से लाइव डेटा खुद फेच करना
     live_context = fetch_live_market_context(detected_symbol)
     radar = MASTER_RADARS.get(detected_symbol, {})
 
@@ -248,19 +205,20 @@ def evaluate_market_trade(text_query: str = "", image_bytes: bytes = None) -> st
         f"Master 4H V-Lows: {radar.get('4h_v_lows', [])}\n"
         f"Key-Levels: {radar.get('key_levels', [])}\n\n"
         "Institutional Execution Rules:\n"
-        "1. DO NOT parrot what the user said. Critically judge if entering the trade right now is safe.\n"
-        "2. If Delta Neutral / Absorption Trap is detected or volume is dry, advise WAIT / AVOID TRAP.\n"
-        "3. 2-Trigger Order Rules: Lot 1 takes TP1 at 1:1 (50% book, move remaining SL to Breakeven). Lot 2 runs for 1:3 RRR (TP2).\n"
-        "4. Max SL 40 Pips rule. Account Risk is fixed at 1% ($25.00).\n\n"
+        "1. Identify ANY pattern in the chart (Double Tops/Bottoms, Bull/Bear Flags, Triangles, Head & Shoulders, Support Breakdown/Retests, 4H Sweeps).\n"
+        "2. Cross-verify the pattern with the LIVE Yahoo Finance Volume & Delta Neutral data. DO NOT blindly parrot the user's notes.\n"
+        "3. If Delta Neutral / Absorption Trap is detected or volume is dry, advise WAIT / AVOID TRAP.\n"
+        "4. 2-Trigger Order Rules: Lot 1 takes TP1 at 1:1 (50% book, move remaining SL to Breakeven). Lot 2 runs for 1:3 RRR (TP2).\n"
+        "5. Max SL 40 Pips rule. Account Risk is fixed at 1% ($25.00).\n\n"
         "Respond in this EXACT clean Hindi/Hinglish structured format:\n"
         "🎯 **निर्णय (Decision):** [APPROVED BUY / APPROVED SELL / WAIT / REJECT TRAP]\n"
         "📊 **लाइव मार्केट व डेल्टा स्थिति:** [1D ट्रेंड, वॉल्यूम सर्ज और डेल्टा न्यूट्रल ट्रैप स्थिति]\n"
-        "🔍 **चार्ट संरचना (Structure):** [4H V-Shape Sweep / S&R Rejection / Pattern]\n"
+        "🔍 **पहचाना गया चार्ट पैटर्न (Pattern):** [Flag / Double Bottom / Breakdown Retest / S&R Rejection]\n"
         "🔹 **एंट्री (Entry Price):** [Price]\n"
         "🛑 **स्टॉप लॉस (Stop Loss):** [Price] (Max 40 pips check)\n"
         "🎯 **टारगेट 1 (1:1 RRR - 50% Book):** [Price] (50% कटेगा और SL कॉस्ट पे आएगा)\n"
         "🚀 **टारगेट 2 (1:3 RRR - Runner):** [Price] (मुख्य रनर)\n"
-        "💡 **सीधा फैसला (Clear Verdict):** [1-2 lines clearly stating whether to enter or wait]"
+        "💡 **सीधा फैसला (Clear Verdict):** [1-2 lines clearly stating whether to enter now or wait]"
     )
     full_prompt = f"{system_context}\n\nUser Message/Notes:\n{text_query}" if text_query else system_context
     return query_gemini_auto(full_prompt, image_bytes)
@@ -270,11 +228,11 @@ def evaluate_market_trade(text_query: str = "", image_bytes: bytes = None) -> st
 # =========================================================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "🚀 *Master Algo Institutional Live Sniper Engine!*\n"
+        "🚀 *Master Algo Institutional Live Sniper Engine Live!*\n"
         "-------------------------------------\n"
-        "• ऑटोमैटिक मॉडल डिटेक्टर (Zero 404 Error)\n"
+        "• Google Gemini 3.8 Flash Engine एक्टिव\n"
         "• Yahoo Finance लाइव मार्केट डेटा (1D Trend + 1H Volume)\n"
-        "• डेल्टा न्यूट्रल और एब्जॉर्प्शन ट्रैप स्कैनर\n"
+        "• डेल्टा न्यूट्रल ट्रैप + सभी चार्ट पैटर्न्स (Flags, Double Top/Bottom, Sweeps)\n"
         "• 2-Trigger Orders: 1:1 पर 50% बुक + Breakeven, और 1:3 रनर\n"
         "• फोटो या टेक्स्ट कुछ भी भेजें, बॉट लाइव डेटा से क्रॉस-चेक करेगा!"
     )
@@ -294,7 +252,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption or ""
     await context.bot.send_message(
         chat_id=chat_id, 
-        text="👁️ [लाइव मार्केट ऑडिट] Yahoo Finance से 1D ट्रेंड, वॉल्यूम और डेल्टा न्यूट्रल स्कैन हो रहा है..."
+        text="👁️️ [लाइव मार्केट ऑडिट] Yahoo Finance से 1D ट्रेंड, वॉल्यूम, डेल्टा न्यूट्रल और चार्ट पैटर्न स्कैन हो रहा है..."
     )
     try:
         photo_file = await update.message.photo[-1].get_file()
@@ -311,7 +269,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if user_text.startswith('/'):
         return
 
-    await context.bot.send_message(chat_id=chat_id, text="🔍 लाइव डेटा फ़ेच कर डेल्टा न्यूट्रल और ट्रेड का विश्लेषण हो रहा है...")
+    await context.bot.send_message(chat_id=chat_id, text="🔍 लाइव डेटा फ़ेच कर डेल्टा न्यूट्रल और ट्रेड सेटअप का विश्लेषण हो रहा है...")
     try:
         res = evaluate_market_trade(text_query=user_text, image_bytes=None)
         await context.bot.send_message(chat_id=chat_id, text=res)
@@ -343,7 +301,7 @@ def main():
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
-    logger.info("Master Live Sniper इंजन सक्रिय है...")
+    logger.info("Master Live Sniper इंजन (Gemini 3.8 Flash) सक्रिय है...")
     application.run_polling()
 
 if __name__ == "__main__":
