@@ -195,6 +195,10 @@ def query_gemini_analysis(user_query: str) -> str:
         return f"❌ AI इंजन एरर: {str(e)}"
 
 def query_gemini_vision(image_bytes: bytes, caption: str = "") -> str:
+    import io
+from PIL import Image
+
+def query_gemini_vision(image_bytes: bytes, caption: str = "") -> str:
     if not vision_model:
         return "⚠️ Gemini Vision मॉडल उपलब्ध नहीं है।"
     vision_prompt = (
@@ -202,8 +206,13 @@ def query_gemini_vision(image_bytes: bytes, caption: str = "") -> str:
         "Confirm user BUY/SELL intent. State Entry, SL, TP1 (1:1), and TP2 (1:3 RRR)."
     )
     try:
-        img_part = {"mime_type": "image/jpeg", "data": image_bytes}
-        res = vision_model.generate_content([vision_prompt, caption, img_part])
+        image = Image.open(io.BytesIO(image_bytes))
+        prompt_content = [vision_prompt]
+        if caption:
+            prompt_content.append(f"User Notes: {caption}")
+        prompt_content.append(image)
+        
+        res = vision_model.generate_content(prompt_content)
         return res.text.strip() if res and res.text else "⚠️ AI चार्ट स्कैन नहीं कर सका।"
     except Exception as e:
         return f"❌ विज़न एरर: {str(e)}"
