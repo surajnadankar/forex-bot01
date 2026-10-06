@@ -3,8 +3,7 @@ import json
 import logging
 import threading
 import traceback
-from datetime import datetime, time as dtime
-import pytz
+from datetime import datetime, time as dtime, timedelta, timezone
 from flask import Flask
 from telegram import Update
 from telegram.ext import (
@@ -24,6 +23,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "").strip()
 ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "").strip()
+
+# भारतीय मानक समय (IST) - बिना किसी बाहरी लाइब्रेरी (pytz) के
+IST = timezone(timedelta(hours=5, minutes=30))
 
 # The5ers $2,500 High Stakes रिस्क पैरामीटर्स
 ACCOUNT_BALANCE = 2500.00
@@ -109,9 +111,6 @@ def run_web_server():
 # 4. 2-ट्रिगर ऑर्डर लॉट साइज़िंग और 1:3 RRR इंजन
 # =========================================================
 def calculate_split_lot_sizes(symbol: str, sl_pips: float):
-    """
-    सख्त $25 रिस्क को 2 ट्रिगर ऑर्डर्स (Lot 1 और Lot 2) में बाँटता है
-    """
     if sl_pips <= 0:
         return 0.01, 0.01
     
@@ -126,20 +125,15 @@ def calculate_split_lot_sizes(symbol: str, sl_pips: float):
     return max(0.01, lot_1), max(0.01, lot_2)
 
 def calculate_trade_targets(entry: float, sl: float, direction: str):
-    """
-    Target 1 = 1:1 RRR (50% Partial Book)
-    Target 2 = 1:3 RRR (Runner Target)
-    Target 3 = 1:5 RRR (Extended Runner)
-    """
     sl_dist = abs(entry - sl)
     if direction.upper() == "BUY":
-        tp1 = entry + sl_dist         # 1:1
-        tp2 = entry + (sl_dist * 3)   # 1:3
-        tp3 = entry + (sl_dist * 5)   # 1:5
+        tp1 = entry + sl_dist         # 1:1 RRR
+        tp2 = entry + (sl_dist * 3)   # 1:3 RRR (Runner)
+        tp3 = entry + (sl_dist * 5)   # 1:5 RRR (Extended)
     else:
-        tp1 = entry - sl_dist         # 1:1
-        tp2 = entry - (sl_dist * 3)   # 1:3
-        tp3 = entry - (sl_dist * 5)   # 1:5
+        tp1 = entry - sl_dist         # 1:1 RRR
+        tp2 = entry - (sl_dist * 3)   # 1:3 RRR (Runner)
+        tp3 = entry - (sl_dist * 5)   # 1:5 RRR (Extended)
     return round(tp1, 5), round(tp2, 5), round(tp3, 5)
 
 # =========================================================
@@ -264,7 +258,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
     win_rate = 0.0 if daily_stats['total_trades'] == 0 else (daily_stats['wins'] / daily_stats['total_trades']) * 100
     msg = (
         f"📋 *[GLOBAL MASTER END OF DAY REPORT]*\n"
@@ -275,7 +269,7 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎯 Today Win Rate: {win_rate:.1f}%\n"
         f"💰 Today Net Realized PnL: ${daily_stats['net_pnl']:.2f} USD (Max Loss Cap: -$100.00)\n"
         f"🏛️ All-Time Evaluation Score: ${daily_stats['net_pnl']:.2f} USD\n\n"
-        f"ℹ️️ Google Sheet: {'कनेक्टेड' if GOOGLE_SHEET_URL else 'अनकॉन्फ़िगर'}"
+        f"ℹ Google Sheet: {'कनेक्टेड' if GOOGLE_SHEET_URL else 'अनकॉन्फ़िगर'}"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -338,7 +332,7 @@ async def send_nightly_eod(context: ContextTypes.DEFAULT_TYPE):
     target_chat = ALLOWED_CHAT_ID or context.job.chat_id
     if not target_chat:
         return
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
     win_rate = 0.0 if daily_stats['total_trades'] == 0 else (daily_stats['wins'] / daily_stats['total_trades']) * 100
     msg = (
         f"📋 *[GLOBAL MASTER END OF DAY REPORT]*\n"
@@ -379,11 +373,10 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^/ask_ai"), ask_ai_cmd))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    # रात 11:30 PM IST शेड्यूलर
+    # रात 11:30 PM IST शेड्यूलर (इन-बिल्ट टाइमज़ोन आधारित)
     job_queue = application.job_queue
     if job_queue:
-        ist_tz = pytz.timezone('Asia/Kolkata')
-        eod_time = dtime(hour=23, minute=30, tzinfo=ist_tz)
+        eod_time = dtime(hour=23, minute=30, tzinfo=IST)
         job_queue.run_daily(send_nightly_eod, time=eod_time, name="nightly_eod")
 
     logger.info("Master 2-Trigger 4H V-Shape Sniper इंजन सक्रिय है...")
