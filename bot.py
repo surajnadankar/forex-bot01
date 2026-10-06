@@ -1,342 +1,180 @@
 import os
-import json
-import logging
-import threading
+import io
+import re
 import base64
-import time
-from datetime import datetime, time as dtime, timedelta, timezone
-from flask import Flask
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes
-)
+import logging
 import requests
 import yfinance as yf
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# =========================================================
-# 1. कॉन्फ़िगरेशन एवं पर्यावरण चर
-# =========================================================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "").strip()
-
-IST = timezone(timedelta(hours=5, minutes=30))
-
-ACCOUNT_BALANCE = 2500.00
-FIXED_RISK_USD = 25.00
-COMMISSION_BUFFER_USD = 1.50
-MAX_SL_PIPS = 40.0
-DAILY_CIRCUIT_BREAKER_USD = 100.00
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Logging setup
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-YF_TICKERS = {
-    "GOLD": "GC=F",
+# Config & Environment Variables
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID")
+
+# Standard Ticker Mapping for Yahoo Finance
+TICKER_MAP = {
+    "EURAUD": "EURAUD=X",
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
     "USDJPY": "JPY=X",
+    "AUDUSD": "AUDUSD=X",
     "USDCAD": "CAD=X",
-    "BTC": "BTC-USD"
+    "XAUUSD": "GC=F",
+    "GOLD": "GC=F",
+    "SILVER": "SI=F",
+    "BTCUSD": "BTC-USD",
+    "BTCUSDT": "BTC-USD",
+    "ETHUSD": "ETH-USD",
+    "US30": "^DJI",
+    "NAS100": "^IXIC",
+    "US500": "^GSPC",
+    "CRUDEOIL": "CL=F",
+    "NGAS": "NG=F"
 }
 
-DEFAULT_RADARS = {
-    "GOLD": {
-        "key_levels": [4148.0, 4149.0, 4138.0, 4120.0, 4110.0, 4162.0, 4166.7],
-        "4h_v_highs": [4399.14, 4166.70],
-        "4h_v_lows": [3959.98, 3996.20, 4110.00]
-    },
-    "EURUSD": {
-        "key_levels": [1.0850, 1.0920, 1.1000, 1.1050, 1.1120],
-        "4h_v_highs": [1.17075, 1.18448, 1.19227, 1.20728],
-        "4h_v_lows": [1.01829, 1.07362, 1.10763]
-    },
-    "GBPUSD": {
-        "key_levels": [1.3140, 1.3200, 1.3250, 1.3300],
-        "4h_v_highs": [1.33080, 1.34020, 1.35660, 1.36730],
-        "4h_v_lows": [1.30100, 1.30980, 1.31400]
-    },
-    "USDJPY": {
-        "key_levels": [152.00, 153.50, 155.00, 156.50],
-        "4h_v_highs": [158.994, 160.329, 163.988],
-        "4h_v_lows": [149.578, 152.206, 153.003, 156.498]
-    },
-    "USDCAD": {
-        "key_levels": [1.3950, 1.4020, 1.4150, 1.4257, 1.4295],
-        "4h_v_highs": [1.43952, 1.44514],
-        "4h_v_lows": [1.38974, 1.39812, 1.41546]
-    },
-    "BTC": {
-        "key_levels": [85686.0, 87701.0, 89500.0],
-        "4h_v_highs": [87345.0],
-        "4h_v_lows": [82679.0]
-    }
-}
+def resolve_yf_ticker(raw_symbol: str) -> str:
+    """Symbol ko Yahoo Finance ticker mein map karta hai."""
+    clean_sym = re.sub(r'[^A-Z0-9]', '', raw_symbol.upper())
+    if clean_sym in TICKER_MAP:
+        return TICKER_MAP[clean_sym]
+    if len(clean_sym) == 6 and not clean_sym.endswith("USD"):
+        return f"{clean_sym}=X"
+    return clean_sym
 
-MASTER_RADARS = json.loads(json.dumps(DEFAULT_RADARS))
-
-daily_stats = {
-    "total_trades": 0,
-    "wins": 0,
-    "losses": 0,
-    "net_pnl": 0.0,
-    "circuit_broken": False
-}
-
-# =========================================================
-# 2. Render बैकग्राउंड वेब सर्वर
-# =========================================================
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Suraj Institutional Live Sniper Engine Online."
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-# =========================================================
-# 3. Yahoo Finance लाइव डेटा (1D + 4H + 1H + डेल्टा न्यूट्रल)
-# =========================================================
-def fetch_live_market_context(symbol: str = "GOLD") -> str:
-    ticker_sym = YF_TICKERS.get(symbol.upper(), "GC=F")
+def fetch_live_market_context(symbol: str) -> str:
+    """Yahoo Finance se exact live data aur 4H/1D levels fetch karta hai."""
     try:
-        ticker = yf.Ticker(ticker_sym)
-        df_1h = ticker.history(period="5d", interval="1h")
-        df_1d = ticker.history(period="1mo", interval="1d")
+        yf_symbol = resolve_yf_ticker(symbol)
+        ticker = yf.Ticker(yf_symbol)
+        
+        df_1d = ticker.history(period="5d", interval="1d")
+        df_4h = ticker.history(period="5d", interval="1h")
+        
+        if df_1d.empty:
+            return f"⚠️ {symbol} ({yf_symbol}) ka live data prapt nahi ho saka."
+        
+        live_price = df_1d['Close'].iloc[-1]
+        day_high = df_1d['High'].iloc[-1]
+        day_low = df_1d['Low'].iloc[-1]
+        
+        c_4h_high = df_4h['High'].max() if not df_4h.empty else day_high
+        c_4h_low = df_4h['Low'].min() if not df_4h.empty else day_low
+        vol_surge = df_1d['Volume'].iloc[-1] / (df_1d['Volume'].mean() + 1e-5) if 'Volume' in df_1d else 1.0
+        
+        delta_analysis = "🟢 [HIGH VOLUME MOMENTUM]" if vol_surge > 1.2 else "⚠️ [DRY VOLUME - Potential Trap]"
 
-        if df_1h.empty:
-            return f"📊 **[LIVE MARKET CONTEXT - {symbol}]**\n• लाइव डेटा: सिंबल एक्टिव है, डेटा सामान्य फ्लो में है।"
-
-        live_price = float(df_1h['Close'].iloc[-1])
-        last_vol = float(df_1h['Volume'].iloc[-1])
-        avg_vol = float(df_1h['Volume'].tail(10).mean())
-        vol_surge = round(last_vol / avg_vol, 2) if avg_vol > 0 else 1.0
-        
-        # 1D ट्रेंड
-        day_open = float(df_1d['Open'].iloc[-1]) if not df_1d.empty else live_price
-        day_trend = "BULLISH 🟢" if live_price >= day_open else "BEARISH 🔴"
-        
-        # 4H ट्रेंड
-        df_4h_recent = df_1h.tail(4)
-        c_4h_open = float(df_4h_recent['Open'].iloc[0])
-        c_4h_high = float(df_4h_recent['High'].max())
-        c_4h_low = float(df_4h_recent['Low'].min())
-        trend_4h = "BULLISH 🟢" if live_price >= c_4h_open else "BEARISH 🔴"
-        
-        # डेल्टा न्यूट्रल व एब्जॉर्प्शन चेक
-        c_open = float(df_1h['Open'].iloc[-1])
-        c_close = float(df_1h['Close'].iloc[-1])
-        c_high = float(df_1h['High'].iloc[-1])
-        c_low = float(df_1h['Low'].iloc[-1])
-        
-        candle_body = abs(c_close - c_open)
-        candle_range = c_high - c_low if (c_high - c_low) > 0 else 0.001
-        
-        is_delta_neutral_trap = (vol_surge >= 1.3) and ((candle_body / candle_range) < 0.35)
-        
-        if is_delta_neutral_trap:
-            delta_analysis = "🚨 [DELTA NEUTRAL TRAP ALERT]: भारी वॉल्यूम पर भी संकीर्ण रेंज (Narrow Range)। ऑर्डर्स एब्जॉर्ब हो रहे हैं।"
-        elif vol_surge >= 1.5:
-            delta_analysis = "✅ [HIGH VOLUME MOMENTUM]: आक्रामक संस्थागत ऑर्डर्स एक्टिव हैं।"
-        else:
-            delta_analysis = "⚠️ [DRY VOLUME]: बाज़ार में पार्टिसिपेशन बेहद कम है, फेकआउट संभव है।"
-
-        return (
-            f"📊 **[YAHOO FINANCE LIVE REAL-TIME AUDIT - {symbol}]**\n"
-            f"• लाइव भाव (Current Price): {live_price:.2f}\n"
-            f"• 1D डेली ट्रेंड: {day_trend}\n"
-            f"• 4H कैंडल ट्रेंड: {trend_4h} (High: {c_4h_high:.2f}, Low: {c_4h_low:.2f})\n"
-            f"• 1H वॉल्यूम सर्ज: {vol_surge}x (औसत के मुकाबले)\n"
-            f"• डेल्टा व लिक्विडिटी स्थिति: {delta_analysis}\n"
-        )
+        return f"""
+📊 **YAHOO FINANCE LIVE AUDIT ({symbol} -> {yf_symbol})**
+- **Current Price:** {live_price:.5f}
+- **1D Range:** High: {day_high:.5f} | Low: {day_low:.5f}
+- **4H Key Zone:** High: {c_4h_high:.5f} | Low: {c_4h_low:.5f}
+- **Volume Surge Ratio:** {vol_surge:.2f}x
+- **Volume Status:** {delta_analysis}
+"""
     except Exception as e:
         logger.warning(f"Yahoo Finance Fetch Warning: {str(e)}")
-        return f"📊 **[LIVE MARKET AUDIT - {symbol}]**\n• लाइव स्थिति: सामान्य वॉल्यूम फ्लो सक्रिय है।"
+        return f"⚠️ Live Market Fetch Warning for {symbol}: Could not resolve exact prices."
 
-# =========================================================
-# 4. Google Gemini 3.8 Flash Engine (With Auto-Retry on High Demand)
-# =========================================================
 def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
+    """Gemini API Call using gemini-3.5-flash-lite"""
     if not GEMINI_API_KEY:
-        return "⚠️ Gemini API Key Render Environment में नहीं मिली।"
+        return "❌ Error: Gemini API Key Not Found in Environment Variables."
 
-    # सिर्फ और सिर्फ आधिकारिक रूप से चालू Gemini 3.8 Flash
+    # Using exact model: gemini-3.5-flash-lite
     model_endpoint = "models/gemini-3.5-flash-lite"
     url = f"https://generativelanguage.googleapis.com/v1beta/{model_endpoint}:generateContent?key={GEMINI_API_KEY}"
-    
+
     parts = [{"text": prompt_text}]
     if image_bytes:
         parts.append({
             "inline_data": {
                 "mime_type": "image/jpeg",
-                "data": base64.b64encode(image_bytes).decode('utf-8')
+                "data": base64.b64encode(image_bytes).decode("utf-8")
             }
         })
-    
+
     payload = {"contents": [{"parts": parts}]}
     headers = {"Content-Type": "application/json"}
-    
-    # हाई डिमांड आने पर 3 सेकंड रुककर 3 बार ऑटो-रीट्राई करेगा
-    max_retries = 3
-    delay_seconds = 3
-    last_error = ""
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=35)
-            res_json = response.json()
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        res_json = response.json()
+        
+        if "candidates" in res_json and len(res_json["candidates"]) > 0:
+            candidate = res_json["candidates"][0]
+            if "content" in candidate and "parts" in candidate["content"]:
+                return candidate["content"]["parts"][0]["text"]
+                
+        if "error" in res_json:
+            return f"❌ AI Engine Error: {res_json['error'].get('message', 'Unknown Error')}"
             
-            if "candidates" in res_json and len(res_json["candidates"]) > 0:
-                candidate = res_json["candidates"][0]
-                if "content" in candidate and "parts" in candidate["content"]:
-                    return candidate["content"]["parts"][0]["text"].strip()
-            
-            if "error" in res_json:
-                err_msg = res_json['error'].get('message', 'Unknown Error')
-                last_error = err_msg
-                # अगर सर्वर लोड या हाई डिमांड है, तो थोड़ा रुककर दोबारा प्रयास करेगा
-                if any(k in err_msg.lower() for k in ["demand", "quota", "resource", "busy", "limit", "unavailable"]):
-                    logger.warning(f"Gemini 3.8 High demand (Attempt {attempt}/{max_retries}). Retrying in {delay_seconds}s...")
-                    time.sleep(delay_seconds)
-                    continue
-                else:
-                    break
-        except Exception as e:
-            last_error = str(e)
-            time.sleep(delay_seconds)
-            continue
-            
-    return f"❌ AI इंजन एरर: {last_error}"
-
-# =========================================================
-# 5. ट्रेड ऑडिट और रिस्क इंजन
-# =========================================================
-def evaluate_market_trade(text_query: str = "", image_bytes: bytes = None) -> str:
-    detected_symbol = "GOLD"
-    for s in ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "BTC"]:
-        if s in text_query.upper():
-            detected_symbol = s
-            break
-
-    live_context = fetch_live_market_context(detected_symbol)
-    radar = MASTER_RADARS.get(detected_symbol, {})
-
-    system_context = (
-        "You are an Elite Institutional Risk Manager for a $2,500 The5ers High Stakes account.\n"
-        "Evaluate the user's trading idea or chart image using the LIVE YAHOO FINANCE DATA provided below:\n\n"
-        f"{live_context}\n"
-        f"Master 4H V-Highs: {radar.get('4h_v_highs', [])}\n"
-        f"Master 4H V-Lows: {radar.get('4h_v_lows', [])}\n"
-        f"Key-Levels: {radar.get('key_levels', [])}\n\n"
-        "Institutional Execution Rules:\n"
-        "1. Explicitly list 1D Trend, 4H Trend, and 1H Volume in the Live Market Context line.\n"
-        "2. Identify ANY chart pattern (Double Tops/Bottoms, Flags, Triangles, Breakdown/Retests, Sweeps).\n"
-        "3. Cross-verify the pattern with the LIVE Volume & Delta Neutral data. DO NOT blindly parrot the user's notes.\n"
-        "4. If Delta Neutral / Absorption Trap is detected or volume is dry, advise WAIT / AVOID TRAP.\n"
-        "5. 2-Trigger Order Rules: Lot 1 takes TP1 at 1:1 (50% book, move remaining SL to Breakeven). Lot 2 runs for 1:3 RRR (TP2).\n"
-        "6. Max SL 40 Pips rule. Account Risk is fixed at 1% ($25.00).\n\n"
-        "Respond in this EXACT clean Hindi/Hinglish structured format:\n"
-        "🎯 **निर्णय (Decision):** [APPROVED BUY / APPROVED SELL / WAIT / AVOID TRAP]\n"
-        "📊 **लाइव मार्केट व डेल्टा स्थिति:**\n"
-        "   • 1D ट्रेंड: [1D Trend]\n"
-        "   • 4H ट्रेंड: [4H Trend & Range]\n"
-        "   • 1H वॉल्यूम व डेल्टा: [Volume surge & Trap Status]\n"
-        "🔍 **पहचाना गया चार्ट पैटर्न (Pattern):** [Pattern Name / Structure]\n"
-        "🔹 **एंट्री (Entry Price):** [Price or NA if waiting]\n"
-        "🛑 **स्टॉप लॉस (Stop Loss):** [Price or NA]\n"
-        "🎯 **टारगेट 1 (1:1 RRR - 50% Book):** [Price or NA]\n"
-        "🚀 **टारगेट 2 (1:3 RRR - Runner):** [Price or NA]\n"
-        "💡 **सीधा फैसला (Clear Verdict):** [1-2 lines clearly stating whether to enter now or wait]"
-    )
-    full_prompt = f"{system_context}\n\nUser Message/Notes:\n{text_query}" if text_query else system_context
-    return query_gemini_auto(full_prompt, image_bytes)
-
-# =========================================================
-# 6. टेलीग्राम कमांड व मैसेज हैंडलर्स
-# =========================================================
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "🚀 *Master Algo Institutional Live Sniper Engine Live!*\n"
-        "-------------------------------------\n"
-        "• Google Gemini 3.8 Flash Engine एक्टिव\n"
-        "• Yahoo Finance लाइव 1D + 4H + 1H मल्टी-टाइमफ्रेम डेटा\n"
-        "• डेल्टा न्यूट्रल ट्रैप + सभी चार्ट पैटर्न्स (Flags, Double Top/Bottom, Sweeps)\n"
-        "• 2-Trigger Orders: 1:1 पर 50% बुक + Breakeven, और 1:3 रनर\n"
-        "• फोटो या टेक्स्ट कुछ भी भेजें, बॉट लाइव डेटा से क्रॉस-चेक करेगा!"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lines = ["📡 *MASTER 4H V-SHAPE & KEY-LEVELS RADAR:*\n"]
-    for asset, data in MASTER_RADARS.items():
-        lines.append(f"🔹 *{asset}:*")
-        lines.append(f"  🔺 4H V-Highs: {', '.join(map(str, data.get('4h_v_highs', [])))}")
-        lines.append(f"  🔻 4H V-Lows: {', '.join(map(str, data.get('4h_v_lows', [])))}")
-        lines.append(f"  🎯 Key-Levels (S/R): {', '.join(map(str, data.get('key_levels', [])))}\n")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return "❌ AI Response Format Error."
+    except Exception as e:
+        return f"❌ API Connection Error: {str(e)}"
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    caption = update.message.caption or ""
-    await context.bot.send_message(
-        chat_id=chat_id, 
-        text="👁️ [लाइव मार्केट ऑडिट] 1D, 4H, वॉल्यूम और डेल्टा न्यूट्रल स्कैन हो रहा है..."
-    )
-    try:
-        photo_file = await update.message.photo[-1].get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
-        res = evaluate_market_trade(text_query=caption, image_bytes=bytes(photo_bytes))
-        await context.bot.send_message(chat_id=chat_id, text=res)
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"⚠️ स्कैन एरर: {str(e)}")
+    """Telegram photo message handler"""
+    message = update.message
+    await message.reply_text("🔍 [लाइव मार्केट ऑडिट] इमेज और लाइव डेटा स्कैन हो रहा है...")
 
-async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text.strip()
-    chat_id = update.effective_chat.id
+    photo_file = await message.photo[-1].get_file()
+    image_bytes = await photo_file.download_as_bytearray()
 
-    if user_text.startswith('/'):
-        return
+    # Step 1: Detect Symbol via Gemini
+    symbol_detect_prompt = """
+    Analyze this chart image and extract ONLY the Symbol/Pair name (e.g. EURAUD, XAUUSD, BTCUSD, US30). 
+    Do NOT output any extra words or analysis. Just return the Symbol name.
+    """
+    detected_symbol_raw = query_gemini_auto(symbol_detect_prompt, bytes(image_bytes)).strip().upper()
+    detected_symbol = re.sub(r'[^A-Z0-9]', '', detected_symbol_raw)
 
-    await context.bot.send_message(chat_id=chat_id, text="🔍 1D, 4H और लाइव वॉल्यूम डेटा फ़ेच हो रहा है...")
-    try:
-        res = evaluate_market_trade(text_query=user_text, image_bytes=None)
-        await context.bot.send_message(chat_id=chat_id, text=res)
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ एरर: {str(e)}")
+    if not detected_symbol or len(detected_symbol) < 3:
+        detected_symbol = "EURAUD"
 
-async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.warning(f"अपडेट नोटिस: {context.error}")
+    # Step 2: Fetch Live Data for detected symbol
+    live_context = fetch_live_market_context(detected_symbol)
 
-# =========================================================
-# 7. मुख्य निष्पादन लूप
-# =========================================================
-def main():
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
-    web_thread.start()
-    logger.info("Flask वेब सर्वर पोर्ट 10000 पर सक्रिय हो चुका है।")
-
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN मिसिंग है!")
-        web_thread.join()
-        return
-
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    application.add_error_handler(global_error_handler)
-
-    application.add_handler(CommandHandler("start", start_cmd))
-    application.add_handler(CommandHandler("levels", levels_cmd))
+    # Step 3: Full Strategy Analysis
+    full_prompt = f"""
+    You are an expert Institutional Smart Money & Liquidity Trading AI Bot.
     
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    [DETECTED PAIR]: {detected_symbol}
+    [LIVE MARKET DATA FROM API]:
+    {live_context}
 
-    logger.info("Gemini 3.8 Flash Engine (With Auto-Retry) सक्रिय है...")
-    application.run_polling()
+    [INSTRUCTIONS FOR ANALYSIS]:
+    1. Verify if the market is at Key Levels (Support/Resistance, Monday High/Low, or 4H Sweep Zone).
+    2. Do NOT rely ONLY on V-Shape Liquidity Sweeps.
+       - If V-Shape Sweep exists with Dry Volume -> Mark as AVOID TRAP / REVERSAL TRAP.
+       - If Breakout / Trend Continuation exists with High Volume -> Provide Continuation Signal.
+    3. Strictly use the price levels provided in the LIVE MARKET DATA above for Entry, SL, and TP. Do NOT hallucinate prices.
+    4. Provide output in clear Hindi/Hinglish format with:
+       - **निर्णय (Decision):** (TAKE TRADE / AVOID TRAP)
+       - **लाइव स्थिति:** (Trend & Volume)
+       - **चार्ट पैटर्न:** (Sweep / Breakout / Retest)
+       - **एंट्री विवरण (2 Lots):** Entry Price, SL, TP1 (50% Book), TP2 (Runner)
+       - **स्पष्ट फैसला (Verdict):** Brief explanation.
+    """
+
+    analysis_result = query_gemini_auto(full_prompt, bytes(image_bytes))
+    await message.reply_text(f"📊 **Symbol Identified:** {detected_symbol}\n\n{analysis_result}")
+
+def main():
+    if not TELEGRAM_BOT_TOKEN:
+        print("Telegram Bot Token Not Found!")
+        return
+
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    
+    print("Bot is running smoothly on gemini-3.5-flash-lite...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
