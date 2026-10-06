@@ -136,7 +136,7 @@ def fetch_live_market_context(symbol: str = "GOLD") -> str:
         elif vol_surge >= 1.5:
             delta_analysis = "✅ [HIGH VOLUME MOMENTUM]: आक्रामक ऑर्डर्स सक्रिय हैं।"
         else:
-            delta_analysis = "⚠️ [DRY VOLUME]: बाज़ार में लिक्विडिटी कम है, फेकआउट संभव है।"
+            delta_analysis = "⚠️️ [DRY VOLUME]: बाज़ार में लिक्विडिटी कम है, फेकआउट संभव है।"
 
         return (
             f"📊 **[YAHOO FINANCE LIVE REAL-TIME AUDIT - {symbol}]**\n"
@@ -150,15 +150,19 @@ def fetch_live_market_context(symbol: str = "GOLD") -> str:
         return f"⚠️ लाइव डेटा फेच में समस्या: {str(e)}"
 
 # =========================================================
-# 4. Google Gemini 3.8 Flash Engine
+# 4. Google Gemini 3 Series Engine (Active Gemini 3 Fallbacks)
 # =========================================================
 def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
     if not GEMINI_API_KEY:
         return "⚠️ Gemini API Key Render Environment में नहीं मिली।"
 
-    # Google द्वारा निर्देशित आधिकारिक चालू मॉडल
-    model_endpoint = "models/gemini-3.8-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model_endpoint}:generateContent?key={GEMINI_API_KEY}"
+    models_to_try = [
+        "models/gemini-3.8-flash",
+        "models/gemini-3.7-flash",
+        "models/gemini-3.6-flash",
+        "models/gemini-3.5-flash",
+        "models/gemini-3.1-flash-lite"
+    ]
     
     parts = [{"text": prompt_text}]
     if image_bytes:
@@ -172,17 +176,24 @@ def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
     payload = {"contents": [{"parts": parts}]}
     headers = {"Content-Type": "application/json"}
     
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        res_json = response.json()
-        
-        if "candidates" in res_json and len(res_json["candidates"]) > 0:
-            return res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-        elif "error" in res_json:
-            return f"❌ AI इंजन एरर: {res_json['error'].get('message', 'Unknown Error')}"
-        return "⚠️️ AI से कोई विश्लेषण प्राप्त नहीं हुआ।"
-    except Exception as e:
-        return f"❌ नेटवर्क / API एरर: {str(e)}"
+    last_error = ""
+    for model_endpoint in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model_endpoint}:generateContent?key={GEMINI_API_KEY}"
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            res_json = response.json()
+            
+            if "candidates" in res_json and len(res_json["candidates"]) > 0:
+                return res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+            elif "error" in res_json:
+                err_msg = res_json['error'].get('message', 'Unknown Error')
+                last_error = err_msg
+                continue
+        except Exception as e:
+            last_error = str(e)
+            continue
+            
+    return f"❌ AI इंजन एरर: {last_error}"
 
 # =========================================================
 # 5. ट्रेड ऑडिट और रिस्क इंजन (All Patterns + Volume/Delta)
@@ -205,7 +216,7 @@ def evaluate_market_trade(text_query: str = "", image_bytes: bytes = None) -> st
         f"Master 4H V-Lows: {radar.get('4h_v_lows', [])}\n"
         f"Key-Levels: {radar.get('key_levels', [])}\n\n"
         "Institutional Execution Rules:\n"
-        "1. Identify ANY pattern in the chart (Double Tops/Bottoms, Bull/Bear Flags, Triangles, Head & Shoulders, Support Breakdown/Retests, 4H Sweeps).\n"
+        "1. Identify ANY chart pattern (Double Tops/Bottoms, Bull/Bear Flags, Triangles, Head & Shoulders, Support Breakdown/Retests, 4H Sweeps).\n"
         "2. Cross-verify the pattern with the LIVE Yahoo Finance Volume & Delta Neutral data. DO NOT blindly parrot the user's notes.\n"
         "3. If Delta Neutral / Absorption Trap is detected or volume is dry, advise WAIT / AVOID TRAP.\n"
         "4. 2-Trigger Order Rules: Lot 1 takes TP1 at 1:1 (50% book, move remaining SL to Breakeven). Lot 2 runs for 1:3 RRR (TP2).\n"
@@ -230,7 +241,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "🚀 *Master Algo Institutional Live Sniper Engine Live!*\n"
         "-------------------------------------\n"
-        "• Google Gemini 3.8 Flash Engine एक्टिव\n"
+        "• Google Gemini 3 Series Active Engine\n"
         "• Yahoo Finance लाइव मार्केट डेटा (1D Trend + 1H Volume)\n"
         "• डेल्टा न्यूट्रल ट्रैप + सभी चार्ट पैटर्न्स (Flags, Double Top/Bottom, Sweeps)\n"
         "• 2-Trigger Orders: 1:1 पर 50% बुक + Breakeven, और 1:3 रनर\n"
@@ -252,7 +263,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption or ""
     await context.bot.send_message(
         chat_id=chat_id, 
-        text="👁️️ [लाइव मार्केट ऑडिट] Yahoo Finance से 1D ट्रेंड, वॉल्यूम, डेल्टा न्यूट्रल और चार्ट पैटर्न स्कैन हो रहा है..."
+        text="👁️ [लाइव मार्केट ऑडिट] Yahoo Finance से 1D ट्रेंड, वॉल्यूम, डेल्टा न्यूट्रल और चार्ट पैटर्न स्कैन हो रहा है..."
     )
     try:
         photo_file = await update.message.photo[-1].get_file()
@@ -301,7 +312,7 @@ def main():
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
-    logger.info("Master Live Sniper इंजन (Gemini 3.8 Flash) सक्रिय है...")
+    logger.info("Master Live Sniper इंजन (Gemini 3 Series) सक्रिय है...")
     application.run_polling()
 
 if __name__ == "__main__":
