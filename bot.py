@@ -106,9 +106,7 @@ def fetch_live_market_context(symbol: str = "GOLD") -> str:
     ticker_sym = YF_TICKERS.get(symbol.upper(), "GC=F")
     try:
         ticker = yf.Ticker(ticker_sym)
-        # 1-घंटे का डेटा (वॉल्यूम व डेल्टा के लिए)
         df_1h = ticker.history(period="5d", interval="1h")
-        # 1-दिन का डेटा (डेली ट्रेंड के लिए)
         df_1d = ticker.history(period="1mo", interval="1d")
 
         if df_1h.empty:
@@ -117,14 +115,13 @@ def fetch_live_market_context(symbol: str = "GOLD") -> str:
         live_price = float(df_1h['Close'].iloc[-1])
         last_vol = float(df_1h['Volume'].iloc[-1])
         avg_vol = float(df_1h['Volume'].tail(10).mean())
-        
         vol_surge = round(last_vol / avg_vol, 2) if avg_vol > 0 else 1.0
         
-        # 1D डेली ट्रेंड
+        # 1D ट्रेंड
         day_open = float(df_1d['Open'].iloc[-1])
         day_trend = "BULLISH 🟢" if live_price > day_open else "BEARISH 🔴"
         
-        # 4H कैंडल स्ट्रक्चर (पिछली 4 घंटों की 1H कैंडल्स को मिलाकर 4H का ट्रेंड)
+        # 4H ट्रेंड
         df_4h_recent = df_1h.tail(4)
         c_4h_open = float(df_4h_recent['Open'].iloc[0])
         c_4h_high = float(df_4h_recent['High'].max())
@@ -143,11 +140,11 @@ def fetch_live_market_context(symbol: str = "GOLD") -> str:
         is_delta_neutral_trap = (vol_surge >= 1.3) and ((candle_body / candle_range) < 0.35)
         
         if is_delta_neutral_trap:
-            delta_analysis = "🚨 [DELTA NEUTRAL TRAP ALERT]: भारी वॉल्यूम पर भी भाव अटका हुआ है (Narrow Range)। खरीदार/विक्रेता एब्जॉर्ब हो रहे हैं।"
+            delta_analysis = "🚨 [DELTA NEUTRAL TRAP ALERT]: भारी वॉल्यूम पर भी भाव अटका है। ऑर्डर्स एब्जॉर्ब हो रहे हैं।"
         elif vol_surge >= 1.5:
-            delta_analysis = "✅ [HIGH VOLUME MOMENTUM]: आक्रामक ऑर्डर्स सक्रिय हैं।"
+            delta_analysis = "✅ [HIGH VOLUME MOMENTUM]: आक्रामक संस्थागत ऑर्डर्स सक्रिय हैं।"
         else:
-            delta_analysis = "⚠️ [DRY VOLUME]: बाज़ार में लिक्विडिटी कम है, फेकआउट संभव है।"
+            delta_analysis = "⚠️ [DRY VOLUME]: बाज़ार में पार्टिसिपेशन बेहद कम है, फेकआउट संभव है।"
 
         return (
             f"📊 **[YAHOO FINANCE LIVE REAL-TIME AUDIT - {symbol}]**\n"
@@ -155,13 +152,14 @@ def fetch_live_market_context(symbol: str = "GOLD") -> str:
             f"• 1D डेली ट्रेंड: {day_trend}\n"
             f"• 4H कैंडल ट्रेंड: {trend_4h} (High: {c_4h_high:.2f}, Low: {c_4h_low:.2f})\n"
             f"• 1H वॉल्यूम सर्ज: {vol_surge}x (औसत के मुकाबले)\n"
-            f"• डेल्टा स्थिति: {delta_analysis}\n"
+            f"• डेल्टा व लिक्विडिटी स्थिति: {delta_analysis}\n"
         )
     except Exception as e:
         logger.error(f"Yahoo Finance Fetch Error: {str(e)}")
         return f"⚠️ लाइव डेटा फेच में समस्या: {str(e)}"
+
 # =========================================================
-# 4. Google Gemini 3 Series Engine (Active Gemini 3 Fallbacks)
+# 4. Google Gemini 3 Series Engine (Active Fallbacks)
 # =========================================================
 def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
     if not GEMINI_API_KEY:
@@ -207,7 +205,7 @@ def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
     return f"❌ AI इंजन एरर: {last_error}"
 
 # =========================================================
-# 5. ट्रेड ऑडिट और रिस्क इंजन (All Patterns + Volume/Delta)
+# 5. ट्रेड ऑडिट और रिस्क इंजन (1D + 4H + 1H Explicit Format)
 # =========================================================
 def evaluate_market_trade(text_query: str = "", image_bytes: bytes = None) -> str:
     detected_symbol = "GOLD"
@@ -227,19 +225,23 @@ def evaluate_market_trade(text_query: str = "", image_bytes: bytes = None) -> st
         f"Master 4H V-Lows: {radar.get('4h_v_lows', [])}\n"
         f"Key-Levels: {radar.get('key_levels', [])}\n\n"
         "Institutional Execution Rules:\n"
-        "1. Identify ANY chart pattern (Double Tops/Bottoms, Bull/Bear Flags, Triangles, Head & Shoulders, Support Breakdown/Retests, 4H Sweeps).\n"
-        "2. Cross-verify the pattern with the LIVE Yahoo Finance Volume & Delta Neutral data. DO NOT blindly parrot the user's notes.\n"
-        "3. If Delta Neutral / Absorption Trap is detected or volume is dry, advise WAIT / AVOID TRAP.\n"
-        "4. 2-Trigger Order Rules: Lot 1 takes TP1 at 1:1 (50% book, move remaining SL to Breakeven). Lot 2 runs for 1:3 RRR (TP2).\n"
-        "5. Max SL 40 Pips rule. Account Risk is fixed at 1% ($25.00).\n\n"
+        "1. Explicitly list 1D Trend, 4H Trend, and 1H Volume in the Live Market Context line.\n"
+        "2. Identify ANY chart pattern (Double Tops/Bottoms, Flags, Triangles, Breakdown/Retests, Sweeps).\n"
+        "3. Cross-verify the pattern with the LIVE Yahoo Finance Volume & Delta Neutral data. DO NOT blindly parrot the user's notes.\n"
+        "4. If Delta Neutral / Absorption Trap is detected or volume is dry, advise WAIT / AVOID TRAP.\n"
+        "5. 2-Trigger Order Rules: Lot 1 takes TP1 at 1:1 (50% book, move remaining SL to Breakeven). Lot 2 runs for 1:3 RRR (TP2).\n"
+        "6. Max SL 40 Pips rule. Account Risk is fixed at 1% ($25.00).\n\n"
         "Respond in this EXACT clean Hindi/Hinglish structured format:\n"
-        "🎯 **निर्णय (Decision):** [APPROVED BUY / APPROVED SELL / WAIT / REJECT TRAP]\n"
-        "📊 **लाइव मार्केट व डेल्टा स्थिति:** [1D ट्रेंड, वॉल्यूम सर्ज और डेल्टा न्यूट्रल ट्रैप स्थिति]\n"
-        "🔍 **पहचाना गया चार्ट पैटर्न (Pattern):** [Flag / Double Bottom / Breakdown Retest / S&R Rejection]\n"
-        "🔹 **एंट्री (Entry Price):** [Price]\n"
-        "🛑 **स्टॉप लॉस (Stop Loss):** [Price] (Max 40 pips check)\n"
-        "🎯 **टारगेट 1 (1:1 RRR - 50% Book):** [Price] (50% कटेगा और SL कॉस्ट पे आएगा)\n"
-        "🚀 **टारगेट 2 (1:3 RRR - Runner):** [Price] (मुख्य रनर)\n"
+        "🎯 **निर्णय (Decision):** [APPROVED BUY / APPROVED SELL / WAIT / AVOID TRAP]\n"
+        "📊 **लाइव मार्केट व डेल्टा स्थिति:**\n"
+        "   • 1D ट्रेंड: [1D Trend]\n"
+        "   • 4H ट्रेंड: [4H Trend & Range]\n"
+        "   • 1H वॉल्यूम व डेल्टा: [Volume surge & Trap Status]\n"
+        "🔍 **पहचाना गया चार्ट पैटर्न (Pattern):** [Pattern Name / Structure]\n"
+        "🔹 **एंट्री (Entry Price):** [Price or NA if waiting]\n"
+        "🛑 **स्टॉप लॉस (Stop Loss):** [Price or NA]\n"
+        "🎯 **टारगेट 1 (1:1 RRR - 50% Book):** [Price or NA]\n"
+        "🚀 **टारगेट 2 (1:3 RRR - Runner):** [Price or NA]\n"
         "💡 **सीधा फैसला (Clear Verdict):** [1-2 lines clearly stating whether to enter now or wait]"
     )
     full_prompt = f"{system_context}\n\nUser Message/Notes:\n{text_query}" if text_query else system_context
@@ -253,10 +255,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚀 *Master Algo Institutional Live Sniper Engine Live!*\n"
         "-------------------------------------\n"
         "• Google Gemini 3 Series Active Engine\n"
-        "• Yahoo Finance लाइव मार्केट डेटा (1D Trend + 1H Volume)\n"
-        "• डेल्टा न्यूट्रल ट्रैप + सभी चार्ट पैटर्न्स (Flags, Double Top/Bottom, Sweeps)\n"
-        "• 2-Trigger Orders: 1:1 पर 50% बुक + Breakeven, और 1:3 रनर\n"
-        "• फोटो या टेक्स्ट कुछ भी भेजें, बॉट लाइव डेटा से क्रॉस-चेक करेगा!"
+        "• Yahoo Finance लाइव 1D + 4H + 1H मल्टी-टाइमफ्रेम डेटा\n"
+        "• डेल्टा न्यूट्रल ट्रैप + सभी चार्ट पैटर्न्स\n"
+        "• 2-Trigger Orders: 1:1 पर 50% बुक + Breakeven, और 1:3 रनर"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -274,7 +275,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption or ""
     await context.bot.send_message(
         chat_id=chat_id, 
-        text="👁️ [लाइव मार्केट ऑडिट] Yahoo Finance से 1D ट्रेंड, वॉल्यूम, डेल्टा न्यूट्रल और चार्ट पैटर्न स्कैन हो रहा है..."
+        text="👁️ [लाइव मार्केट ऑडिट] Yahoo Finance से 1D, 4H, वॉल्यूम और डेल्टा न्यूट्रल स्कैन हो रहा है..."
     )
     try:
         photo_file = await update.message.photo[-1].get_file()
@@ -291,7 +292,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if user_text.startswith('/'):
         return
 
-    await context.bot.send_message(chat_id=chat_id, text="🔍 लाइव डेटा फ़ेच कर डेल्टा न्यूट्रल और ट्रेड सेटअप का विश्लेषण हो रहा है...")
+    await context.bot.send_message(chat_id=chat_id, text="🔍 1D, 4H और लाइव वॉल्यूम डेटा फ़ेच हो रहा है...")
     try:
         res = evaluate_market_trade(text_query=user_text, image_bytes=None)
         await context.bot.send_message(chat_id=chat_id, text=res)
