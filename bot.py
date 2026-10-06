@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # जेमिनी कॉन्फ़िगरेशन
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel("gemini-1.5-flash")
+    ai_model = genai.GenerativeModel("gemini-pro")
 else:
     ai_model = None
 
