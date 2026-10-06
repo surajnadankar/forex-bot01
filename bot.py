@@ -23,14 +23,14 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "").strip()
 ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "").strip()
 
-# भारतीय मानक समय (IST) - इन-बिल्ट (किसी बाहरी पैकेज की ज़रूरत नहीं)
+# भारतीय मानक समय (IST) - बिना बाहरी लाइब्रेरी के
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # The5ers $2,500 High Stakes रिस्क पैरामीटर्स
 ACCOUNT_BALANCE = 2500.00
 RISK_PER_TRADE_PERCENT = 0.01  # 1% फिक्स रिस्क ($25.00)
 FIXED_RISK_USD = ACCOUNT_BALANCE * RISK_PER_TRADE_PERCENT  # $25.00
-COMMISSION_BUFFER_USD = 1.50   # स्प्रेड व कमीशन बफ़र ($23.50 नेट रिस्क)
+COMMISSION_BUFFER_USD = 1.50   # स्प्रेड व कमीशन बफ़र ($23.50 शुद्ध रिस्क)
 MAX_SL_PIPS = 40.0            # 40 पिप्स से बड़ा स्टॉप लॉस सीधे स्किप
 DAILY_CIRCUIT_BREAKER_USD = 100.00  # -$100 पर दैनिक ट्रेडिंग फ़्रीज़
 
@@ -107,7 +107,7 @@ def run_web_server():
 def calculate_split_lot_sizes(symbol: str, sl_pips: float):
     if sl_pips <= 0:
         return 0.01, 0.01
-    net_risk = FIXED_RISK_USD - COMMISSION_BUFFER_USD  # $23.50
+    net_risk = FIXED_RISK_USD - COMMISSION_BUFFER_USD
     pip_val = 7.14 if "CAD" in symbol.upper() else 10.0
     dollar_risk_per_std_lot = sl_pips * pip_val
     total_lot = round(net_risk / dollar_risk_per_std_lot, 2)
@@ -119,13 +119,13 @@ def calculate_split_lot_sizes(symbol: str, sl_pips: float):
 def calculate_trade_targets(entry: float, sl: float, direction: str):
     sl_dist = abs(entry - sl)
     if direction.upper() == "BUY":
-        tp1 = entry + sl_dist         # 1:1 RRR
+        tp1 = entry + sl_dist         # 1:1 RRR (50% Book -> SL to Entry)
         tp2 = entry + (sl_dist * 3)   # 1:3 RRR (Runner)
-        tp3 = entry + (sl_dist * 5)   # 1:5 RRR (Extended)
+        tp3 = entry + (sl_dist * 5)   # 1:5 RRR (Extended Runner)
     else:
         tp1 = entry - sl_dist         # 1:1 RRR
-        tp2 = entry - (sl_dist * 3)   # 1:3 RRR (Runner)
-        tp3 = entry - (sl_dist * 5)   # 1:5 RRR (Extended)
+        tp2 = entry - (sl_dist * 3)   # 1:3 RRR
+        tp3 = entry - (sl_dist * 5)   # 1:5 RRR
     return round(tp1, 5), round(tp2, 5), round(tp3, 5)
 
 # =========================================================
@@ -152,30 +152,12 @@ def check_4h_vshape_and_15m_trigger(symbol: str, candle_15m: dict):
     return False, None, None, None, None, None
 
 # =========================================================
-# 6. सोमवार वीकेंड गैप-फ़िल चेकर
-# =========================================================
-def evaluate_monday_gap(symbol: str, friday_close: float, monday_open: float):
-    pip_mult = 100 if "JPY" in symbol else 10000
-    gap_pips = abs(monday_open - friday_close) * pip_mult
-    if gap_pips >= 15.0:
-        dir_gap = "SELL" if monday_open > friday_close else "BUY"
-        MONDAY_WEEKEND_GAPS[symbol] = {
-            "friday_close": friday_close,
-            "monday_open": monday_open,
-            "gap_pips": gap_pips,
-            "direction": dir_gap
-        }
-        return True, MONDAY_WEEKEND_GAPS[symbol]
-    return False, None
-
-# =========================================================
-# 7. AI विश्लेषण इंजन (Auto Fallback Resolver - No 404 Ever)
+# 6. AI विश्लेषण इंजन (Auto Fallback - Zero 404 Error)
 # =========================================================
 def call_gemini_smart(prompt_parts: list) -> str:
     if not GEMINI_API_KEY:
         return "⚠️ Gemini API Key Render Environment में नहीं मिली।"
     
-    # 404 से बचने के लिए प्राथमिकता सूची
     candidate_models = ["gemini-1.5-flash", "gemini-flash-latest", "gemini-pro"]
     last_err = ""
     for m_name in candidate_models:
@@ -204,7 +186,6 @@ def query_gemini_vision(image_bytes: bytes, caption: str = "") -> str:
         "Scan this trading chart for 4H V-Shape swing highs/lows and 15M candle rejection wicks. "
         "Confirm user BUY/SELL intent. State Entry, SL, TP1 (1:1), and TP2 (1:3 RRR)."
     )
-    # बिना किसी बाहरी PIL पैकेज के शुद्ध इन-मेमोरी डिक्शनरी
     image_part = {
         "mime_type": "image/jpeg",
         "data": image_bytes
@@ -216,7 +197,7 @@ def query_gemini_vision(image_bytes: bytes, caption: str = "") -> str:
     return call_gemini_smart(content)
 
 # =========================================================
-# 8. टेलीग्राम कमांड हैंडलर्स
+# 7. टेलीग्राम कमांड हैंडलर्स
 # =========================================================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
@@ -244,12 +225,6 @@ async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"  🔺 4H V-Highs: {', '.join(map(str, data.get('4h_v_highs', [])))}")
         lines.append(f"  🔻 4H V-Lows: {', '.join(map(str, data.get('4h_v_lows', [])))}")
         lines.append(f"  🎯 Key-Levels: {', '.join(map(str, data.get('key_levels', [])))}\n")
-    
-    if MONDAY_WEEKEND_GAPS:
-        lines.append("⚡ *Monday Forex Gaps:*")
-        for sym, g in MONDAY_WEEKEND_GAPS.items():
-            lines.append(f"  • {sym}: Gap {g['gap_pips']:.1f} Pips ({g['direction']} Fill Target)")
-            
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -275,8 +250,7 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Wins: {daily_stats['wins']} | ❌ Losses: {daily_stats['losses']}\n"
         f"🎯 Today Win Rate: {win_rate:.1f}%\n"
         f"💰 Today Net Realized PnL: ${daily_stats['net_pnl']:.2f} USD (Max Loss Cap: -$100.00)\n"
-        f"🏛️ All-Time Evaluation Score: ${daily_stats['net_pnl']:.2f} USD\n\n"
-        f"ℹ Google Sheet: {'कनेक्टेड' if GOOGLE_SHEET_URL else 'अनकॉन्फ़िगर'}"
+        f"🏛️ All-Time Evaluation Score: ${daily_stats['net_pnl']:.2f} USD"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -333,6 +307,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text=f"⚠️ स्कैन एरर: {str(e)}")
 
 # =========================================================
+# 8. ग्लोबल एरर हैंडलर (No Error Handler Warning Fix)
+# =========================================================
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.warning(f"नेटवर्क / इंटरनल हैंडलर अपडेट: {context.error}")
+
+# =========================================================
 # 9. रात 11:30 PM IST EOD रिपोर्ट शेड्यूलर
 # =========================================================
 async def send_nightly_eod(context: ContextTypes.DEFAULT_TYPE):
@@ -368,6 +348,9 @@ def main():
         return
 
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # एरर हैंडलर रजिस्टर किया गया
+    application.add_error_handler(global_error_handler)
 
     application.add_handler(CommandHandler("start", start_cmd))
     application.add_handler(CommandHandler("levels", levels_cmd))
