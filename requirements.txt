@@ -1,5 +1,8 @@
-ccxt
+python-telegram-bot>=20.0
+google-generativeai>=0.3.0
+requests>=2.28.0
 pandas
-requests
+ccxt
 flask
 gunicorn
+python-dotenv>=1.0.0
