@@ -873,4 +873,150 @@ async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     symbol = args[0].upper() if args else "GOLD"
     await update.message.reply_text(f"🔍 {symbol} की analysis बन रही है...")
-    res
+    async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    symbol = args[0].upper() if args else "GOLD"
+    await update.message.reply_text(f"🔍 {symbol} की analysis बन रही है...")
+    res, _ = evaluate_trade_logic(symbol)
+    await update.message.reply_text(res)
+
+
+async def vshapes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📊 Sheet से V-Shapes load हो रही हैं...")
+    existing = load_all_vshapes()
+
+    if not existing:
+        await update.message.reply_text("कोई V-Shape नहीं मिली अभी तक।")
+        return
+
+    lines = ["📋 *सभी Detected V-Shapes:*\n"]
+    count = 0
+    for vid, vs in existing.items():
+        status_icon = "🎯" if vs.get("Status") == "SWEPT" else "⏳"
+        lines.append(
+            f"{status_icon} *{vs.get('Asset', '?')}* {vs.get('Type', '?')} V @ {vs.get('Price', '?')}\n"
+            f"   Status: {vs.get('Status', 'PENDING')}\n"
+        )
+        count += 1
+        if count >= 20:
+            lines.append(f"\n_... और {len(existing) - 20} और_")
+            break
+
+    await update.message.reply_text("\n".join(lines)[:4000], parse_mode="Markdown")
+
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    existing = load_all_vshapes()
+    total = len(existing)
+    swept = sum(1 for v in existing.values() if v.get("Status") == "SWEPT")
+    pending = total - swept
+
+    sheet_status = "✅ Connected" if get_sheet() else "❌ Not connected"
+
+    msg = (
+        f"🤖 *Bot Status*\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🟢 Bot: Online\n"
+        f"📊 Sheet: {sheet_status}\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"📈 *V-Shape Stats (1 Month):*\n"
+        f"• Total: {total}\n"
+        f"• Swept: {swept}\n"
+        f"• Pending: {pending}\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"⏱️ Scan interval: 15 min\n"
+        f"🎯 Assets: {', '.join(SCAN_ASSETS)}"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    await message.reply_text("📸 Chart analyze हो रहा है...")
+
+    try:
+        photo_file = await message.photo[-1].get_file()
+        image_bytes = await photo_file.download_as_bytearray()
+
+        detect_prompt = (
+            "Extract ONLY the Symbol/Pair name from this chart "
+            "(XAUUSD, GOLD, EURUSD, BTCUSD, AUDUSD, etc). Return only the symbol."
+        )
+        detect_result = query_gemini_auto(detect_prompt, bytes(image_bytes))
+        first_line = detect_result.split("\n")[0].strip().upper()
+        detected_symbol = re.sub(r"[^A-Z0-9]", "", first_line)
+
+        if not detected_symbol or len(detected_symbol) < 3:
+            detected_symbol = "GOLD"
+
+        caption = message.caption or ""
+        res, _ = evaluate_trade_logic(
+            detected_symbol,
+            user_notes=caption,
+            image_bytes=bytes(image_bytes),
+        )
+        await message.reply_text(f"📊 *Symbol:* {detected_symbol}\n\n{res}", parse_mode="Markdown")
+    except Exception as e:
+        await message.reply_text(f"⚠️ Scan error: {str(e)}")
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text.strip()
+    if user_text.startswith("/"):
+        return
+
+    await update.message.reply_text("🔍 Analyze हो रहा है...")
+
+    found_symbol = "GOLD"
+    clean_upper = user_text.upper()
+    for s in TICKER_MAP.keys():
+        if s in clean_upper:
+            found_symbol = s
+            break
+
+    try:
+        res, _ = evaluate_trade_logic(found_symbol, user_notes=user_text)
+        await update.message.reply_text(f"📊 *Asset:* {found_symbol}\n\n{res}", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
+# =========================================================
+# 15. MAIN
+# =========================================================
+def main():
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN missing!")
+        web_thread.join()
+        return
+
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("scan", scan_cmd))
+    app.add_handler(CommandHandler("check", check_cmd))
+    app.add_handler(CommandHandler("vshapes", vshapes_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Auto-scan job every 15 minutes
+    if app.job_queue:
+        app.job_queue.run_repeating(
+            auto_scan_job,
+            interval=SCAN_INTERVAL,
+            first=30,  # start after 30 seconds
+        )
+        logger.info("JobQueue started - auto-scan every 15 min")
+    else:
+        logger.warning("JobQueue not available - install python-telegram-bot[job-queue]")
+
+    logger.info("Bot running...")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
