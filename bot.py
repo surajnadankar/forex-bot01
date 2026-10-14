@@ -880,7 +880,6 @@ async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res, _ = evaluate_trade_logic(symbol)
     await update.message.reply_text(res)
 
-
 async def vshapes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📊 Sheet से V-Shapes load हो रही हैं...")
     existing = load_all_vshapes()
