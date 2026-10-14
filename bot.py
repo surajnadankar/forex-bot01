@@ -1,21 +1,21 @@
 import os
-import io
 import re
 import base64
 import logging
 import threading
 import json
 from datetime import datetime, timezone
+
 import requests
 import pandas as pd
 import yfinance as yf
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     filters,
     ContextTypes,
 )
@@ -24,14 +24,15 @@ from telegram.ext import (
 # 1. Logging & Config
 # =========================================================
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "TradingSignals").strip()
-GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON", "").strip()  # JSON string in env
+GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON", "").strip()
 
 # =========================================================
 # 2. Ticker Map & Fallback Levels
@@ -65,27 +66,30 @@ PIP_SIZE = {
 }
 
 FALLBACK_LEVELS = {
-    "GOLD":   [4100.0, 4120.0, 4148.0, 4166.7, 4200.0],
+    "GOLD": [4100.0, 4120.0, 4148.0, 4166.7, 4200.0],
     "EURUSD": [1.0850, 1.0920, 1.1000, 1.1050, 1.1120],
     "GBPUSD": [1.3140, 1.3200, 1.3250, 1.3300],
     "USDJPY": [152.00, 153.50, 155.00, 156.50],
     "USDCAD": [1.3950, 1.4020, 1.4150, 1.4257],
-    "BTC":    [82000.0, 85000.0, 87700.0, 90000.0],
+    "BTC": [82000.0, 85000.0, 87700.0, 90000.0],
 }
 
 # =========================================================
-# 3. Flask Web Server
+# 3. Flask Web Server (health check for Render)
 # =========================================================
 web_app = Flask(__name__)
+
 
 @web_app.route("/")
 @web_app.route("/health")
 def health():
     return "Sniper Engine Online 200 OK", 200
 
+
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
 
 # =========================================================
 # 4. Symbol Helpers
@@ -98,6 +102,7 @@ def resolve_yf_ticker(raw_symbol: str) -> str:
         return f"{clean_sym}=X"
     return clean_sym
 
+
 def normalize_symbol(raw_symbol: str) -> str:
     clean = re.sub(r"[^A-Z0-9]", "", raw_symbol.upper())
     if "XAU" in clean or clean == "GOLD":
@@ -106,18 +111,22 @@ def normalize_symbol(raw_symbol: str) -> str:
         return "BTC"
     return clean
 
+
 def get_pip_size(symbol: str) -> float:
     return PIP_SIZE.get(normalize_symbol(symbol), 0.0001)
 
+
 # =========================================================
-# 5. CORE: Swing Points Detection
+# 5. Swing Point Detection
 # =========================================================
 def find_swing_points(df: pd.DataFrame, lookback: int = 5):
     swing_highs, swing_lows = [], []
     if df.empty or len(df) < lookback * 2 + 1:
         return swing_highs, swing_lows
+
     highs = df["High"].values
     lows = df["Low"].values
+
     for i in range(lookback, len(df) - lookback):
         window_h = highs[i - lookback:i + lookback + 1]
         window_l = lows[i - lookback:i + lookback + 1]
@@ -125,10 +134,12 @@ def find_swing_points(df: pd.DataFrame, lookback: int = 5):
             swing_highs.append((i, float(highs[i])))
         if lows[i] == window_l.min():
             swing_lows.append((i, float(lows[i])))
+
     return swing_highs, swing_lows
 
+
 # =========================================================
-# 6. CORE: Liquidity Sweep Detection
+# 6. Liquidity Sweep Detection
 # =========================================================
 def detect_liquidity_sweep(
     df: pd.DataFrame,
@@ -145,15 +156,20 @@ def detect_liquidity_sweep(
 
     for idx in range(len(df) - recent_bars, len(df)):
         c = df.iloc[idx]
-        o, h, l, cl = float(c["Open"]), float(c["High"]), float(c["Low"]), float(c["Close"])
+        o = float(c["Open"])
+        h = float(c["High"])
+        l = float(c["Low"])
+        cl = float(c["Close"])
+
         rng = h - l
         if rng <= 0:
             continue
+
         body = abs(cl - o)
         upper_wick = h - max(o, cl)
         lower_wick = min(o, cl) - l
 
-        # BEARISH SWEEP (Buy-side liquidity grab)
+        # BEARISH SWEEP — buy-side liquidity grab
         for sh_idx, sh_price in swing_highs:
             if sh_idx >= idx or (idx - sh_idx) > max_age_bars:
                 continue
@@ -168,7 +184,7 @@ def detect_liquidity_sweep(
                     })
                     break
 
-        # BULLISH SWEEP (Sell-side liquidity grab)
+        # BULLISH SWEEP — sell-side liquidity grab
         for sl_idx, sl_price in swing_lows:
             if sl_idx >= idx or (idx - sl_idx) > max_age_bars:
                 continue
@@ -185,37 +201,48 @@ def detect_liquidity_sweep(
 
     return sweeps
 
+
 # =========================================================
-# 7. CORE: V-Shape Detection
+# 7. V-Shape Detection
 # =========================================================
-def detect_v_shape(df: pd.DataFrame, min_move_pct: float = 0.3, max_bars: int = 6,
-                   recovery_ratio: float = 0.5):
+def detect_v_shape(
+    df: pd.DataFrame,
+    min_move_pct: float = 0.3,
+    max_bars: int = 6,
+    recovery_ratio: float = 0.5,
+):
     result = {"bullish_v": None, "bearish_v": None}
     if df.empty or len(df) < max_bars + 3:
         return result
 
     recent = df.tail(max_bars + 3).reset_index()
 
-    # BULLISH V: sharp drop + recovery
+    # BULLISH V — sharp drop + strong recovery
     for i in range(2, len(recent) - 1):
         low_i = float(recent["Low"].iloc[i])
         left_high = float(recent["High"].iloc[:i].max())
         if left_high <= 0:
             continue
+
         drop_pct = ((left_high - low_i) / left_high) * 100
-        right_close = float(recent["Close"].iloc[i + 1])
         if (left_high - low_i) <= 0:
             continue
+
+        right_close = float(recent["Close"].iloc[i + 1])
         recovery_pct = ((right_close - low_i) / (left_high - low_i)) * 100
 
         c = recent.iloc[i]
-        o, cl, h, l = float(c["Open"]), float(c["Close"]), float(c["High"]), float(c["Low"])
+        o = float(c["Open"])
+        cl = float(c["Close"])
+        l = float(c["Low"])
         body = abs(cl - o)
         lower_wick = min(o, cl) - l
 
-        if (drop_pct >= min_move_pct
-                and recovery_pct >= recovery_ratio * 100
-                and (body == 0 or lower_wick > body * 1.5)):
+        if (
+            drop_pct >= min_move_pct
+            and recovery_pct >= recovery_ratio * 100
+            and (body == 0 or lower_wick > body * 1.5)
+        ):
             result["bullish_v"] = {
                 "low": round(low_i, 5),
                 "left_high": round(left_high, 5),
@@ -224,26 +251,32 @@ def detect_v_shape(df: pd.DataFrame, min_move_pct: float = 0.3, max_bars: int = 
             }
             break
 
-    # BEARISH V: sharp pump + rejection
+    # BEARISH V — sharp pump + rejection
     for i in range(2, len(recent) - 1):
         high_i = float(recent["High"].iloc[i])
         left_low = float(recent["Low"].iloc[:i].min())
         if left_low <= 0:
             continue
+
         pump_pct = ((high_i - left_low) / left_low) * 100
-        right_close = float(recent["Close"].iloc[i + 1])
         if (high_i - left_low) <= 0:
             continue
+
+        right_close = float(recent["Close"].iloc[i + 1])
         rejection_pct = ((high_i - right_close) / (high_i - left_low)) * 100
 
         c = recent.iloc[i]
-        o, cl, h, l = float(c["Open"]), float(c["Close"]), float(c["High"]), float(c["Low"])
+        o = float(c["Open"])
+        cl = float(c["Close"])
+        h = float(c["High"])
         body = abs(cl - o)
         upper_wick = h - max(o, cl)
 
-        if (pump_pct >= min_move_pct
-                and rejection_pct >= recovery_ratio * 100
-                and (body == 0 or upper_wick > body * 1.5)):
+        if (
+            pump_pct >= min_move_pct
+            and rejection_pct >= recovery_ratio * 100
+            and (body == 0 or upper_wick > body * 1.5)
+        ):
             result["bearish_v"] = {
                 "high": round(high_i, 5),
                 "left_low": round(left_low, 5),
@@ -254,10 +287,13 @@ def detect_v_shape(df: pd.DataFrame, min_move_pct: float = 0.3, max_bars: int = 
 
     return result
 
+
 # =========================================================
-# 8. CORE: Equal Highs/Lows
+# 8. Equal Highs / Equal Lows
 # =========================================================
-def detect_equal_levels(df: pd.DataFrame, tolerance_pct: float = 0.0008, lookback: int = 5):
+def detect_equal_levels(
+    df: pd.DataFrame, tolerance_pct: float = 0.0008, lookback: int = 5
+):
     eq_highs, eq_lows = [], []
     swing_highs, swing_lows = find_swing_points(df, lookback)
 
@@ -277,14 +313,16 @@ def detect_equal_levels(df: pd.DataFrame, tolerance_pct: float = 0.0008, lookbac
 
     return sorted(set(eq_highs)), sorted(set(eq_lows))
 
+
 # =========================================================
-# 9. CORE: Session Levels (Asian / London / NY)
+# 9. Session Levels
 # =========================================================
 def get_session_levels(df_5m: pd.DataFrame):
     sessions = {"ASIAN": (0, 8), "LONDON": (7, 16), "NEWYORK": (12, 21)}
     out = {}
     if df_5m.empty:
         return out
+
     idx = df_5m.index
     if idx.tz is None:
         idx = idx.tz_localize("UTC")
@@ -301,8 +339,9 @@ def get_session_levels(df_5m: pd.DataFrame):
             }
     return out
 
+
 # =========================================================
-# 10. CORE: Setup Quality Score
+# 10. Setup Quality Score
 # =========================================================
 def score_setup_quality(sweeps, v_shape, trend_4h, vol_surge, rr_ratio=2.0):
     score = 0
@@ -310,53 +349,56 @@ def score_setup_quality(sweeps, v_shape, trend_4h, vol_surge, rr_ratio=2.0):
 
     if sweeps:
         score += 40
-        reasons.append(f"✅ {len(sweeps)} sweep(s) detected")
+        reasons.append(f"{len(sweeps)} sweep(s) detected")
     else:
-        reasons.append("❌ No sweep — low probability")
+        reasons.append("No sweep - low probability")
 
     has_v = v_shape.get("bullish_v") or v_shape.get("bearish_v")
     if has_v:
         score += 20
-        reasons.append("✅ V-Shape confirmed")
+        reasons.append("V-Shape confirmed")
     else:
-        reasons.append("⚠️ No V-shape")
+        reasons.append("No V-shape")
 
     if "BULLISH" in trend_4h or "BEARISH" in trend_4h:
         score += 15
-        reasons.append("✅ 4H trend aligned")
+        reasons.append("4H trend aligned")
     else:
-        reasons.append("⚠️ 4H trend unclear")
+        reasons.append("4H trend unclear")
 
     if vol_surge >= 1.3:
         score += 15
-        reasons.append(f"✅ Volume surge {vol_surge}x")
+        reasons.append(f"Volume surge {vol_surge}x")
     else:
-        reasons.append(f"⚠️ Low volume {vol_surge}x")
+        reasons.append(f"Low volume {vol_surge}x")
 
     if rr_ratio >= 2.0:
         score += 10
-        reasons.append(f"✅ RRR 1:{rr_ratio}")
+        reasons.append(f"RRR 1:{rr_ratio}")
     else:
-        reasons.append(f"❌ RRR only 1:{rr_ratio}")
+        reasons.append(f"RRR only 1:{rr_ratio}")
 
     if score >= 75:
-        verdict = "🔥 HIGH QUALITY — COPY करें"
+        verdict = "HIGH QUALITY - COPY KAREIN"
     elif score >= 55:
-        verdict = "⚡ MEDIUM — 50% size"
+        verdict = "MEDIUM - 50% size"
     else:
-        verdict = "🛑 SKIP — setup कमज़ोर"
+        verdict = "SKIP - setup kamzor"
 
     return {"score": score, "verdict": verdict, "reasons": reasons}
 
+
 # =========================================================
-# 11. Google Sheet Logging
+# 11. Google Sheet Logging (safe - never crashes bot)
 # =========================================================
 _sheet_client = None
+
 
 def get_sheet():
     global _sheet_client
     if _sheet_client is not None:
         return _sheet_client
+
     try:
         import gspread
         from oauth2client.service_account import ServiceAccountCredentials
@@ -378,8 +420,9 @@ def get_sheet():
         _sheet_client = client.open(GOOGLE_SHEET_NAME).sheet1
         return _sheet_client
     except Exception as e:
-        logger.error(f"Google Sheet init error: {e}")
+        logger.warning(f"Google Sheet init skipped: {e}")
         return None
+
 
 def log_to_sheet(data: dict) -> bool:
     sheet = get_sheet()
@@ -404,17 +447,16 @@ def log_to_sheet(data: dict) -> bool:
         ])
         return True
     except Exception as e:
-        logger.error(f"Sheet log error: {e}")
+        logger.warning(f"Sheet log error: {e}")
         return False
+
 
 # =========================================================
 # 12. Live Market Data Builder
 # =========================================================
 def fetch_realtime_market_data(symbol: str) -> dict:
-    """
-    Returns dict with live data + detected sweeps + V-shape + scores
-    """
     result = {"symbol": symbol, "ok": False}
+
     try:
         yf_symbol = resolve_yf_ticker(symbol)
         ticker = yf.Ticker(yf_symbol)
@@ -427,67 +469,70 @@ def fetch_realtime_market_data(symbol: str) -> dict:
             result["error"] = "No data available"
             return result
 
-        live_price = float(df_5m["Close"].iloc[-1]) if not df_5m.empty \
-            else float(df_1d["Close"].iloc[-1])
+        if not df_5m.empty:
+            live_price = float(df_5m["Close"].iloc[-1])
+        else:
+            live_price = float(df_1d["Close"].iloc[-1])
 
         day_open = float(df_1d["Open"].iloc[-1]) if not df_1d.empty else live_price
-        day_trend = "BULLISH 🟢" if live_price >= day_open else "BEARISH 🔴"
+        day_trend = "BULLISH" if live_price >= day_open else "BEARISH"
 
-        # 4H proper
         trend_4h = day_trend
         c_4h_high = c_4h_low = live_price
+
         if not df_1h.empty and len(df_1h) >= 8:
             df_4h = df_1h.resample("4H").agg({
-                "Open": "first", "High": "max",
-                "Low": "min", "Close": "last",
+                "Open": "first",
+                "High": "max",
+                "Low": "min",
+                "Close": "last",
             }).dropna()
+
             if not df_4h.empty:
                 c_4h_open = float(df_4h["Open"].iloc[-1])
                 c_4h_high = float(df_4h["High"].iloc[-1])
                 c_4h_low = float(df_4h["Low"].iloc[-1])
-                trend_4h = "BULLISH 🟢" if live_price >= c_4h_open else "BEARISH 🔴"
+                trend_4h = "BULLISH" if live_price >= c_4h_open else "BEARISH"
 
-        # Volume
         vol_surge = 1.0
-        delta_status = "⚖️ [BALANCED VOLUME]"
+        delta_status = "[BALANCED VOLUME]"
+
         if not df_5m.empty and "Volume" in df_5m.columns and df_5m["Volume"].sum() > 0:
             recent_vol = float(df_5m["Volume"].tail(3).sum())
             avg_vol = float(df_5m["Volume"].mean()) * 3
+
             if avg_vol > 0:
                 vol_surge = round(recent_vol / avg_vol, 2)
 
             c = df_5m.iloc[-1]
-            c_o, c_c = float(c["Open"]), float(c["Close"])
-            c_h, c_l = float(c["High"]), float(c["Low"])
+            c_o = float(c["Open"])
+            c_c = float(c["Close"])
+            c_h = float(c["High"])
+            c_l = float(c["Low"])
             body = abs(c_c - c_o)
             rng = (c_h - c_l) if (c_h - c_l) > 0 else 0.001
-            if vol_surge >= 1.3 and (body / rng) < 0.35:
-                delta_status = "🚨 [ABSORPTION] Orders absorbed — reversal possible"
-            elif vol_surge >= 1.4:
-                delta_status = "✅ [MOMENTUM] Aggressive breakout orders"
-            elif vol_surge <= 0.6:
-                delta_status = "⚠️ [DRY VOLUME] Low liquidity — trap risk"
 
-        # Sweeps
+            if vol_surge >= 1.3 and (body / rng) < 0.35:
+                delta_status = "[ABSORPTION] Orders absorbed - reversal possible"
+            elif vol_surge >= 1.4:
+                delta_status = "[MOMENTUM] Aggressive breakout orders"
+            elif vol_surge <= 0.6:
+                delta_status = "[DRY VOLUME] Low liquidity - trap risk"
+
         sweeps_5m = detect_liquidity_sweep(df_5m) if not df_5m.empty else []
         sweeps_1h = detect_liquidity_sweep(df_1h) if not df_1h.empty else []
 
-        # V-Shape
         v_shape_5m = detect_v_shape(df_5m) if not df_5m.empty else {"bullish_v": None, "bearish_v": None}
         v_shape_1h = detect_v_shape(df_1h) if not df_1h.empty else {"bullish_v": None, "bearish_v": None}
 
-        # Equal levels
         eq_highs, eq_lows = ([], [])
         if not df_1h.empty:
             eq_highs, eq_lows = detect_equal_levels(df_1h)
 
-        # Session
         sessions = get_session_levels(df_5m) if not df_5m.empty else {}
 
-        # Quality Score
         quality = score_setup_quality(sweeps_5m, v_shape_5m, trend_4h, vol_surge)
 
-        # Fallback levels
         norm = normalize_symbol(symbol)
         key_levels = FALLBACK_LEVELS.get(norm, [])
 
@@ -518,20 +563,21 @@ def fetch_realtime_market_data(symbol: str) -> dict:
         result["error"] = str(e)
         return result
 
+
 # =========================================================
 # 13. Format Context for AI
 # =========================================================
 def format_market_context(d: dict) -> str:
     if not d.get("ok"):
-        return f"📊 Data unavailable for {d.get('symbol')}: {d.get('error')}"
+        return f"Data unavailable for {d.get('symbol')}: {d.get('error')}"
 
     def fmt_sweeps(sw_list):
         if not sw_list:
-            return "  कोई ताज़ा स्वीप नहीं"
+            return "  No recent sweeps"
         lines = []
         for s in sw_list[:5]:
             lines.append(
-                f"  • {s['type']} @ {s['level']} | swept {s['swept_to']} | "
+                f"  - {s['type']} @ {s['level']} | swept {s['swept_to']} | "
                 f"close {s['closed_at']} | {s['bars_ago']} bars ago"
             )
         return "\n".join(lines)
@@ -543,7 +589,7 @@ def format_market_context(d: dict) -> str:
         if v.get("bearish_v"):
             bv = v["bearish_v"]
             return f"BEARISH V (high {bv['high']}, pump {bv['pump_pct']}%, reject {bv['rejection_pct']}%)"
-        return "कोई V-shape नहीं"
+        return "No V-shape"
 
     sessions_str = "N/A"
     if d.get("sessions"):
@@ -553,42 +599,38 @@ def format_market_context(d: dict) -> str:
 
     q = d["quality"]
 
-    return f"""
-📊 LIVE DATA ({d['symbol']} -> {d['yf_symbol']})
-• Price: {d['price']}
-• 1D Trend: {d['day_trend']}
-• 4H Trend: {d['trend_4h']} (High: {d['c_4h_high']} | Low: {d['c_4h_low']})
-• Vol Surge: {d['vol_surge']}x
-• Delta: {d['delta_status']}
+    return (
+        f"LIVE DATA ({d['symbol']} -> {d['yf_symbol']})\n"
+        f"- Price: {d['price']}\n"
+        f"- 1D Trend: {d['day_trend']}\n"
+        f"- 4H Trend: {d['trend_4h']} (High: {d['c_4h_high']} | Low: {d['c_4h_low']})\n"
+        f"- Vol Surge: {d['vol_surge']}x\n"
+        f"- Delta: {d['delta_status']}\n\n"
+        f"SWEEPS (5M):\n{fmt_sweeps(d['sweeps_5m'])}\n\n"
+        f"SWEEPS (1H):\n{fmt_sweeps(d['sweeps_1h'])}\n\n"
+        f"V-SHAPE (5M): {fmt_v(d['v_shape_5m'])}\n"
+        f"V-SHAPE (1H): {fmt_v(d['v_shape_1h'])}\n\n"
+        f"Equal Highs: {d['eq_highs'] if d['eq_highs'] else 'None'}\n"
+        f"Equal Lows: {d['eq_lows'] if d['eq_lows'] else 'None'}\n\n"
+        f"Sessions: {sessions_str}\n"
+        f"Key S/R: {d['key_levels']}\n\n"
+        f"SETUP SCORE: {q['score']}/100 -> {q['verdict']}\n"
+        f"Reasons: {q['reasons']}"
+    )
 
-🔍 SWEEPS (5M):
-{fmt_sweeps(d['sweeps_5m'])}
-
-🔍 SWEEPS (1H):
-{fmt_sweeps(d['sweeps_1h'])}
-
-📐 V-SHAPE (5M): {fmt_v(d['v_shape_5m'])}
-📐 V-SHAPE (1H): {fmt_v(d['v_shape_1h'])}
-
-⚖️ Equal Highs: {d['eq_highs'] if d['eq_highs'] else 'कोई नहीं'}
-⚖️ Equal Lows: {d['eq_lows'] if d['eq_lows'] else 'कोई नहीं'}
-
-🕒 Sessions: {sessions_str}
-🎯 Key S/R: {d['key_levels']}
-
-🏆 SETUP SCORE: {q['score']}/100 → {q['verdict']}
-Reasons: {q['reasons']}
-"""
 
 # =========================================================
 # 14. Gemini Engine
 # =========================================================
 def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
     if not GEMINI_API_KEY:
-        return "❌ Error: Gemini API Key missing."
+        return "Error: Gemini API Key missing."
 
     model_endpoint = "models/gemini-2.0-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model_endpoint}:generateContent?key={GEMINI_API_KEY}"
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/"
+        f"{model_endpoint}:generateContent?key={GEMINI_API_KEY}"
+    )
 
     parts = [{"text": prompt_text}]
     if image_bytes:
@@ -605,18 +647,22 @@ def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=45)
         j = r.json()
+
         if "candidates" in j and j["candidates"]:
             cand = j["candidates"][0]
             if "content" in cand and "parts" in cand["content"]:
                 return cand["content"]["parts"][0]["text"].strip()
+
         if "error" in j:
-            return f"❌ AI Error: {j['error'].get('message', 'Unknown')}"
-        return "❌ AI Response Format Error."
+            return f"AI Error: {j['error'].get('message', 'Unknown')}"
+
+        return "AI Response Format Error."
     except Exception as e:
-        return f"❌ API Error: {str(e)}"
+        return f"API Error: {str(e)}"
+
 
 # =========================================================
-# 15. Trade Evaluator (AI + Fallback)
+# 15. Trade Evaluator
 # =========================================================
 def evaluate_trade_logic(symbol: str, user_notes: str = "", image_bytes: bytes = None):
     data = fetch_realtime_market_data(symbol)
@@ -644,110 +690,159 @@ Evaluate this setup for {symbol}.
 
 Format:
 
-🎯 **मार्केट स्ट्रक्चर:** [Sweep Reversal / S&R Bounce / V-Shape Setup]
-📊 **लाइव डेटा:**
-   • भाव: [price]
-   • 1D / 4H ट्रेंड: [trend]
-   • स्वीप / V-Shape: [summary]
-   • वॉल्यूम/डेल्टा: [analysis]
-   • सेटअप स्कोर: [score/100]
+MARKET STRUCTURE: [Sweep Reversal / S&R Bounce / V-Shape Setup]
+LIVE DATA:
+   - Price: [price]
+   - 1D / 4H Trend: [trend]
+   - Sweep / V-Shape: [summary]
+   - Volume/Delta: [analysis]
+   - Setup Score: [score/100]
 
-🟢 **BULLISH PLAN:**
-   • ट्रिगर: [level]
-   • एंट्री: [price]
-   • SL: [price] (≤40 pips)
-   • TP1 (1:1): [price]
-   • TP2 (1:3): [price]
+BULLISH PLAN:
+   - Trigger: [level]
+   - Entry: [price]
+   - SL: [price] (max 40 pips)
+   - TP1 (1:1): [price]
+   - TP2 (1:3): [price]
 
-🔴 **BEARISH PLAN:**
-   • ट्रिगर: [level]
-   • एंट्री: [price]
-   • SL: [price] (≤40 pips)
-   • TP1 (1:1): [price]
-   • TP2 (1:3): [price]
+BEARISH PLAN:
+   - Trigger: [level]
+   - Entry: [price]
+   - SL: [price] (max 40 pips)
+   - TP1 (1:1): [price]
+   - TP2 (1:3): [price]
 
-💡 **मास्टर वर्डिक्ट:** [2 lines]
+MASTER VERDICT: [2 lines in Hindi/Hinglish]
 """
     ai_reply = query_gemini_auto(full_prompt, image_bytes)
     return ai_reply, data
+
 
 # =========================================================
 # 16. Telegram Handlers
 # =========================================================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "🚀 *Institutional Sniper Engine — Copy Trading Mode*\n"
+        "Institutional Sniper Engine - Copy Trading Mode\n"
         "-------------------------------------\n"
-        "• Real Liquidity Sweep Detection (5M + 1H)\n"
-        "• V-Shape Detection (dynamic, not hardcoded)\n"
-        "• Equal Highs/Lows + Session Levels\n"
-        "• Setup Quality Score (0-100)\n"
-        "• Google Sheet Logging\n"
-        "• Dual-Trigger Plan (Bullish + Bearish)\n\n"
-        "कमांड्स:\n"
-        "/start - यह मैसेज\n"
-        "/levels - लाइव स्वीप + V-shape स्कैन\n"
-        "/check SYMBOL - किसी asset का पूरा प्लान\n"
-        "/sheet - आज के signals Sheet से लाएँ\n\n"
-        "या सीधे चार्ट भेजें / टेक्स्ट में पूछें।"
+        "- Real Liquidity Sweep Detection (5M + 1H)\n"
+        "- V-Shape Detection (dynamic)\n"
+        "- Equal Highs/Lows + Session Levels\n"
+        "- Setup Quality Score (0-100)\n"
+        "- Google Sheet Logging\n"
+        "- Dual-Trigger Plan (Bullish + Bearish)\n\n"
+        "Commands:\n"
+        "/start - Ye message\n"
+        "/levels - Live sweep + V-shape scan\n"
+        "/check SYMBOL - Full plan for asset\n"
+        "/sheet - Last 10 signals\n\n"
+        "Ya seedha chart bhejein / text me poochein."
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg)
+
 
 async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📡 [स्कैन] सभी assets पर स्वीप + V-shape चेक हो रहे हैं...")
+    await update.message.reply_text("Scanning all assets for sweeps + V-shape...")
+
     lines = []
     for asset in ["GOLD", "EURUSD", "GBPUSD", "USDJPY", "BTC"]:
         d = fetch_realtime_market_data(asset)
         if d.get("ok"):
             q = d["quality"]
             v = d["v_shape_5m"]
-            v_txt = "V✅" if (v.get("bullish_v") or v.get("bearish_v")) else "V❌"
+            v_txt = "V-OK" if (v.get("bullish_v") or v.get("bearish_v")) else "V-NO"
             sw_txt = f"SW{len(d['sweeps_5m'])}" if d["sweeps_5m"] else "SW0"
             lines.append(
-                f"• *{asset}*: {d['price']} | {d['trend_4h'][:2]} | "
+                f"- {asset}: {d['price']} | {d['trend_4h']} | "
                 f"{sw_txt} {v_txt} | Score {q['score']} | {q['verdict']}"
             )
         else:
-            lines.append(f"• *{asset}*: data error")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            lines.append(f"- {asset}: data error")
+
+    await update.message.reply_text("\n".join(lines))
+
 
 async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     symbol = args[0].upper() if args else "GOLD"
-    await update.message.reply_text(f"🔍 {symbol} का पूरा प्लान बन रहा है...")
+    await update.message.reply_text(f"Building full plan for {symbol}...")
 
     res, data = evaluate_trade_logic(symbol)
 
     if data.get("ok"):
-        log_to_sheet({
-            "symbol": symbol,
-            "price": data["price"],
-            "verdict": data["quality"]["verdict"],
-            "score": data["quality"]["score"],
-            "sweep_type": data["sweeps_5m"][0]["type"] if data["sweeps_5m"] else "NONE",
-            "v_shape": "YES" if (data["v_shape_5m"].get("bullish_v") or data["v_shape_5m"].get("bearish_v")) else "NO",
-            "trend_4h": data["trend_4h"],
-            "vol_surge": data["vol_surge"],
-            "reasons": data["quality"]["reasons"],
-        })
+        try:
+            log_to_sheet({
+                "symbol": symbol,
+                "price": data["price"],
+                "verdict": data["quality"]["verdict"],
+                "score": data["quality"]["score"],
+                "sweep_type": data["sweeps_5m"][0]["type"] if data["sweeps_5m"] else "NONE",
+                "v_shape": "YES" if (data["v_shape_5m"].get("bullish_v") or data["v_shape_5m"].get("bearish_v")) else "NO",
+                "trend_4h": data["trend_4h"],
+                "vol_surge": data["vol_surge"],
+                "reasons": data["quality"]["reasons"],
+            })
+        except Exception as e:
+            logger.warning(f"Sheet log failed silently: {e}")
 
     await update.message.reply_text(res)
+
 
 async def sheet_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sheet = get_sheet()
     if sheet is None:
-        await update.message.reply_text("❌ Google Sheet connect नहीं है।")
+        await update.message.reply_text("Google Sheet connect nahi hai.")
         return
+
     try:
         rows = sheet.get_all_values()
         if len(rows) <= 1:
-            await update.message.reply_text("📄 Sheet खाली है।")
+            await update.message.reply_text("Sheet khali hai.")
             return
-        header = rows[0]
+
         last = rows[-10:]
-        txt = ["📄 *Last 10 signals:*\n"]
+        txt = ["Last 10 signals:\n"]
         for r in last:
             txt.append(" | ".join(r[:6]))
-        await update.message.reply_text("\n".join(txt)[:4000], parse_mode="Markdown")
+
+        await update.message.reply_text("\n".join(txt)[:4000])
     except Exception as e:
-        await update.message.reply_text(f"❌ Sheet error: {
+        await update.message.reply_text(f"Sheet error: {e}")
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    await message.reply_text("Analyzing chart: sweeps, V-shape, S&R...")
+
+    try:
+        photo_file = await message.photo[-1].get_file()
+        image_bytes = await photo_file.download_as_bytearray()
+
+        detect_prompt = (
+            "Analyze this trading chart. Extract ONLY the Symbol/Pair name "
+            "(XAUUSD, GOLD, EURUSD, GBPUSD, BTCUSD, USDJPY, USDCAD, etc). "
+            "Return only the symbol name on first line."
+        )
+        detect_result = query_gemini_auto(detect_prompt, bytes(image_bytes))
+        first_line = detect_result.split("\n")[0].strip().upper()
+        detected_symbol = re.sub(r"[^A-Z0-9]", "", first_line)
+
+        if not detected_symbol or len(detected_symbol) < 3:
+            detected_symbol = "GOLD"
+
+        caption = message.caption or ""
+
+        analysis_result, data = evaluate_trade_logic(
+            detected_symbol,
+            user_notes=caption,
+            image_bytes=bytes(image_bytes),
+        )
+
+        if data.get("ok"):
+            try:
+                log_to_sheet({
+                    "symbol": detected_symbol,
+                    "price": data["price"],
+                    "verdict": data["quality"]["verdict"],
+                    "score": data["quality"]["score"],
+                    "sweep_type": data["sweeps_5m"][0
