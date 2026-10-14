@@ -288,7 +288,34 @@ def get_session_levels(df_5m: pd.DataFrame):
 
 
 # =========================================================
-# 10. Quality Score
+# 10. Safe 4H Resample (Pandas version-safe)
+# =========================================================
+def resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
+    """
+    Safely resample hourly data to 4H.
+    Handles Pandas version differences ('4H' vs '4h').
+    """
+    if df_1h.empty:
+        return pd.DataFrame()
+
+    for freq in ["4h", "4H", "240min", "240T"]:
+        try:
+            result = df_1h.resample(freq).agg({
+                "Open": "first",
+                "High": "max",
+                "Low": "min",
+                "Close": "last",
+            }).dropna()
+            if not result.empty:
+                return result
+        except Exception:
+            continue
+
+    return pd.DataFrame()
+
+
+# =========================================================
+# 11. Quality Score
 # =========================================================
 def score_setup_quality(sweeps, v_shape, trend_4h, vol_surge, rr_ratio=2.0):
     score = 0
@@ -329,7 +356,7 @@ def score_setup_quality(sweeps, v_shape, trend_4h, vol_surge, rr_ratio=2.0):
 
 
 # =========================================================
-# 11. Live Data
+# 12. Live Data
 # =========================================================
 def fetch_realtime_market_data(symbol: str) -> dict:
     result = {"symbol": symbol, "ok": False}
@@ -353,16 +380,12 @@ def fetch_realtime_market_data(symbol: str) -> dict:
         trend_4h = day_trend
         c_4h_high = c_4h_low = live_price
 
-        if not df_1h.empty and len(df_1h) >= 8:
-            df_4h = df_1h.resample("4H").agg({
-                "Open": "first", "High": "max",
-                "Low": "min", "Close": "last",
-            }).dropna()
-            if not df_4h.empty:
-                c_4h_open = float(df_4h["Open"].iloc[-1])
-                c_4h_high = float(df_4h["High"].iloc[-1])
-                c_4h_low = float(df_4h["Low"].iloc[-1])
-                trend_4h = "BULLISH" if live_price >= c_4h_open else "BEARISH"
+        df_4h = resample_4h(df_1h)
+        if not df_4h.empty:
+            c_4h_open = float(df_4h["Open"].iloc[-1])
+            c_4h_high = float(df_4h["High"].iloc[-1])
+            c_4h_low = float(df_4h["Low"].iloc[-1])
+            trend_4h = "BULLISH" if live_price >= c_4h_open else "BEARISH"
 
         vol_surge = 1.0
         delta_status = "[BALANCED]"
@@ -428,7 +451,7 @@ def fetch_realtime_market_data(symbol: str) -> dict:
 
 
 # =========================================================
-# 12. Context Formatter
+# 13. Context Formatter
 # =========================================================
 def format_market_context(d: dict) -> str:
     if not d.get("ok"):
@@ -483,7 +506,7 @@ def format_market_context(d: dict) -> str:
 
 
 # =========================================================
-# 13. Gemini
+# 14. Gemini
 # =========================================================
 def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
     if not GEMINI_API_KEY:
@@ -525,7 +548,7 @@ def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
 
 
 # =========================================================
-# 14. Trade Evaluator
+# 15. Trade Evaluator
 # =========================================================
 def evaluate_trade_logic(symbol: str, user_notes: str = "", image_bytes: bytes = None):
     data = fetch_realtime_market_data(symbol)
@@ -569,7 +592,7 @@ MASTER VERDICT: [2 lines]
 
 
 # =========================================================
-# 15. Handlers
+# 16. Handlers
 # =========================================================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
@@ -667,7 +690,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================================================
-# 16. Main
+# 17. Main
 # =========================================================
 def main():
     web_thread = threading.Thread(target=run_web_server, daemon=True)
@@ -686,7 +709,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     logger.info("Bot running...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
