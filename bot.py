@@ -870,7 +870,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
+    args = context.args          ← ✅ 4 spaces indent
     symbol = args[0].upper() if args else "GOLD"
     await update.message.reply_text(f"🔍 {symbol} की analysis बन रही है...")
     async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
