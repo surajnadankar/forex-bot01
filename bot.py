@@ -547,11 +547,7 @@ async def check_and_send_15m_entry(context: ContextTypes.DEFAULT_TYPE, asset: st
 def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
     if not GEMINI_API_KEY:
         return "Error: Gemini API Key missing."
-    model_candidates = [
-        "models/gemini-3.0-flash-lite",
-        "models/gemini-3.1-flash-lite",
-        "models/gemini-3.5-flash-lite",
-        "models/gemini-3.5-flash",
+    model_endpoint = "models/gemini-3.5-flash-lite"
     ]
     parts = [{"text": prompt_text}]
     if image_bytes:
