@@ -31,7 +31,7 @@ ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "").strip()
 COOLDOWN_SECONDS = 7200  # 2 घंटे का अलर्ट कूलडाउन
 
 # =========================================================
-# 2. सभी पेयर्स मौजूद हैं — सभी के लेवल्स पूरी तरह खाली ([])
+# 2. सभी पेयर्स (खाली लेवल्स - आप खुद सेट और ऐड करेंगे)
 # =========================================================
 WATCH_ASSETS = {
     # Metals (शुद्ध Spot Ticker)
@@ -146,7 +146,7 @@ def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
     return "AI से उत्तर प्राप्त नहीं हुआ।"
 
 # =========================================================
-# 6. बैकग्राउंड प्राइस वॉचर (केवल यूज़र के सेट किए लेवल्स पर अलर्ट)
+# 6. बैकग्राउंड प्राइस वॉचर (यूज़र लेवल्स पर ऑटो अलर्ट्स)
 # =========================================================
 def background_price_watcher(bot_app):
     global last_prices, last_alert_times
@@ -162,7 +162,7 @@ def background_price_watcher(bot_app):
             for asset, conf in WATCH_ASSETS.items():
                 levels = conf.get("levels", [])
                 if not levels:
-                    continue  # जब तक आप लेवल नहीं डालेंगे, कोई फालतू अलर्ट नहीं आएगा
+                    continue
 
                 sym = conf["ticker"]
                 current_price = get_live_tick(sym)
@@ -226,18 +226,23 @@ def background_price_watcher(bot_app):
         time.sleep(20)
 
 # =========================================================
-# 7. टेलीग्राम कमांड्स और मैसेज हैंडलर्स
+# 7. टेलीग्राम कमांड्स और हैंडलर्स (Set, Add, Clear, Levels)
 # =========================================================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     msg = (
         f"🚀 **मल्टी-एसेट स्नाइपर बॉट एक्टिव!**\n\n"
-        f"• आपकी चैट ID: `{chat_id}`\n"
-        f"• सभी फर्जी लेवल्स क्लियर कर दिए गए हैं।\n"
-        f"• नए लेवल्स डालने के लिए लिखें: `/setlevels XAUUSD 4120,4138,4162`\n"
-        f"• किसी पेयर के लेवल्स हटाने के लिए लिखें: `/clearlevels XAUUSD`\n"
-        f"• सभी सेव लेवल्स देखने के लिए लिखें: `/levels`\n"
-        f"• चार्ट की फोटो भेजें, जेमिनी तुरंत The5ers के नियमों पर एक्शन प्लान देगी।"
+        f"• आपकी चैट ID: `{chat_id}`\n\n"
+        f"📌 **कमांड्स:**\n"
+        f"1. **पूरे नए लेवल्स डालने के लिए:**\n"
+        f"`/setlevels BTCUSD 82500, 83100, 84200`\n"
+        f"2. **मौजूदा लेवल्स में और नए लेवल्स जोड़ने के लिए:**\n"
+        f"`/addlevels BTCUSD 85500, 86200`\n"
+        f"3. **लेवल्स हटाने (खाली करने) के लिए:**\n"
+        f"`/clearlevels BTCUSD`\n"
+        f"4. **सेव किए गए लेवल्स देखने के लिए:**\n"
+        f"`/levels`\n\n"
+        f"• चार्ट की फोटो भेजें, जेमिनी The5ers $2,500 के नियमों पर प्लान देगी।"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -250,16 +255,46 @@ async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def set_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """पुराने हटाकर बिल्कुल नए लेवल्स ओवरराइट करेगा (स्पेस-प्रूफ)"""
     try:
         args = context.args
         if len(args) < 2:
-            await update.message.reply_text("उपयोग उदाहरण: `/setlevels XAUUSD 4120,4138,4162`", parse_mode="Markdown")
+            await update.message.reply_text("उपयोग: `/setlevels XAUUSD 4120, 4138, 4162`", parse_mode="Markdown")
             return
         asset = args[0].upper()
-        lvls = [float(x.strip()) for x in args[1].split(",") if x.strip()]
+        # स्पेस वाले सभी टुकड़ों को जोड़कर कॉमा से अलग करना
+        raw_text = "".join(args[1:])
+        lvls = [float(x.strip()) for x in raw_text.split(",") if x.strip()]
         if asset in WATCH_ASSETS:
-            WATCH_ASSETS[asset]["levels"] = sorted(lvls)
-            await update.message.reply_text(f"✅ **{asset}** के नए लेवल्स सेट हो गए:\n`{WATCH_ASSETS[asset]['levels']}`", parse_mode="Markdown")
+            WATCH_ASSETS[asset]["levels"] = sorted(list(set(lvls)))
+            await update.message.reply_text(
+                f"✅ **{asset}** के नए लेवल्स सेट हो गए (कुल {len(WATCH_ASSETS[asset]['levels'])}):\n`{WATCH_ASSETS[asset]['levels']}`", 
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(f"एसेट {asset} लिस्ट में नहीं मिला।")
+    except Exception as e:
+        await update.message.reply_text(f"एरर: {e}")
+
+async def add_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """पुराने लेवल्स को रखेगा और नए लेवल्स जोड़ देगा (Add Levels)"""
+    try:
+        args = context.args
+        if len(args) < 2:
+            await update.message.reply_text("उपयोग: `/addlevels BTCUSD 85500, 86200`", parse_mode="Markdown")
+            return
+        asset = args[0].upper()
+        raw_text = "".join(args[1:])
+        new_lvls = [float(x.strip()) for x in raw_text.split(",") if x.strip()]
+        if asset in WATCH_ASSETS:
+            current_lvls = WATCH_ASSETS[asset].get("levels", [])
+            # पुराने और नए लेवल्स को मिलाकर डुप्लीकेट हटाना और सॉर्ट करना
+            combined = sorted(list(set(current_lvls + new_lvls)))
+            WATCH_ASSETS[asset]["levels"] = combined
+            await update.message.reply_text(
+                f"➕ **{asset}** में नए लेवल्स जुड़ गए (कुल {len(combined)}):\n`{combined}`", 
+                parse_mode="Markdown"
+            )
         else:
             await update.message.reply_text(f"एसेट {asset} लिस्ट में नहीं मिला।")
     except Exception as e:
@@ -269,7 +304,7 @@ async def clear_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
         if len(args) < 1:
-            await update.message.reply_text("उपयोग उदाहरण: `/clearlevels XAUUSD`", parse_mode="Markdown")
+            await update.message.reply_text("उपयोग: `/clearlevels XAUUSD`", parse_mode="Markdown")
             return
         asset = args[0].upper()
         if asset in WATCH_ASSETS:
@@ -355,6 +390,7 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("levels", levels_cmd))
     app.add_handler(CommandHandler("setlevels", set_levels_cmd))
+    app.add_handler(CommandHandler("addlevels", add_levels_cmd))
     app.add_handler(CommandHandler("clearlevels", clear_levels_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
@@ -362,7 +398,7 @@ def main():
     watcher_thread = threading.Thread(target=background_price_watcher, args=(app,), daemon=True)
     watcher_thread.start()
 
-    logger.info("Multi-Asset Dynamic Sniper चालू है (सभी लेवल्स खाली)...")
+    logger.info("Multi-Asset Dynamic Sniper चालू है...")
     app.run_polling()
 
 if __name__ == "__main__":
