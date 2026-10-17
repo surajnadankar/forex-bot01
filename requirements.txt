@@ -3,6 +3,3 @@ yfinance
 pandas
 flask
 requests
-gspread
-google-auth
-google-auth-oauthlib
