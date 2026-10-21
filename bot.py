@@ -11,8 +11,8 @@ from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler, # नया जोड़ा गया है
-    filters,        # नया जोड़ा गया है
+    MessageHandler,
+    filters,
     ContextTypes,
 )
 
@@ -105,12 +105,14 @@ async def keep_alive_job():
     while True:
         try:
             import requests
-            # अपनी Render सर्विस का URL यहाँ डालें
+            # ✅ आपका असली Render URL यहाँ डाल दिया गया है
             requests.get("https://forex-bot01.onrender.com/health", timeout=10)
             logger.info("Keep-alive ping sent.")
-        except Exception:
-            pass
-        await asyncio.sleep(600) # हर 10 मिनट में पिंग करेगा
+        except Exception as e:
+            logger.warning(f"Keep-alive ping failed: {e}")
+        
+        # हर 10 मिनट (600 सेकंड) में पिंग करेगा
+        await asyncio.sleep(600)
 
 # =========================================================
 # 5. TELEGRAM ALERTS
