@@ -135,7 +135,6 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("=== Checking Key Levels ===")
     now = datetime.now(timezone.utc)
     
-    # बग फिक्स: सिर्फ उन्हीं सिंबल्स को चेक करें जिनमें लेवल्स हैं
     active_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
     
     for symbol in active_symbols:
@@ -211,7 +210,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """नया कमांड: यह बताएगा कि बोट के पास कौन से लेवल्स हैं"""
     total_normal = sum(len(v) for v in USER_KEY_LEVELS.values())
     total_special = sum(len(v) for v in SPECIAL_LEVELS.values())
     
@@ -280,7 +278,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # =========================================================
-# 10. MAIN FUNCTION
+# 10. MAIN FUNCTION (UPDATED WITH TIMEOUTS)
 # =========================================================
 def main():
     web_thread = threading.Thread(target=run_web_server, daemon=True)
@@ -291,17 +289,28 @@ def main():
         web_thread.join()
         return
 
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    # ✅ यहाँ टाइमआउट सेटिंग्स जोड़ दी गई हैं
+    app = (
+        ApplicationBuilder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .read_timeout(30)
+        .write_timeout(30)
+        .connect_timeout(15)
+        .pool_timeout(5)
+        .get_updates_read_timeout(60)
+        .get_updates_connect_timeout(15)
+        .get_updates_pool_timeout(10)
+        .build()
+    )
 
-    # ---- ERROR HANDLER (बोट क्रैश न हो इसलिए) ----
+    # ---- ERROR HANDLER ----
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.warning(f"Update {update} caused error: {context.error}")
 
     app.add_error_handler(error_handler)
-    # ----------------------------------------------
 
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("levels", levels_cmd)) # नया कमांड
+    app.add_handler(CommandHandler("levels", levels_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("addleve", add_normal_level_cmd))
     app.add_handler(CommandHandler("addmajor", add_major_level_cmd))
