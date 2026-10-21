@@ -44,7 +44,7 @@ TICKER_MAP = {
 }
 
 # =========================================================
-# 3. NORMAL KEY LEVELS
+# 3. NORMAL KEY LEVELS (173 Levels)
 # =========================================================
 USER_KEY_LEVELS = {
     "XAUUSD": [276.436, 2561.073, 2924.338, 3213.15, 3288.019, 3401.552, 3917.805, 3959.981, 3996.199, 4231.59, 4399.14, 4519.006, 4666.543, 4868.081, 5451.16, 5602.225],
@@ -216,7 +216,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # पहले एक छोटा सा शुरुआती मैसेज भेजें
+    # सारे यूनिक सिंबल्स निकालें जिनमें लेवल्स हैं
+    active_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
     total_normal = sum(len(v) for v in USER_KEY_LEVELS.values())
     total_special = sum(len(v) for v in SPECIAL_LEVELS.values())
     
@@ -227,9 +228,6 @@ async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"(नीचे हर एसेट की लिस्ट दी गई है)", 
         parse_mode="Markdown"
     )
-
-    # सारे यूनिक सिंबल्स निकालें जिनमें लेवल्स हैं
-    active_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
 
     for symbol in sorted(active_symbols):
         normal_lvls = USER_KEY_LEVELS.get(symbol, [])
@@ -251,6 +249,8 @@ async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         # हर एसेट का मैसेज अलग भेजें
         await update.message.reply_text(text, parse_mode="Markdown")
+        await asyncio.sleep(0.5) # थोड़ा ब्रेक ताकि टेलीग्राम ब्लॉक न करे
+
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
@@ -353,7 +353,8 @@ def main():
         logger.info("JobQueue started - Level check every 15 min")
 
     logger.info("Bot running...")
-    app.run_polling(drop_pending_updates=True)
+    # ✅ Conflict error से बचने के लिए drop_pending_updates और close_loop का इस्तेमाल
+    app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
     main()
