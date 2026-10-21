@@ -1,405 +1,300 @@
 import os
-import io
-import re
-import base64
 import logging
 import threading
-import time
-import requests
+from datetime import datetime, timezone
+
 import yfinance as yf
-from datetime import datetime, timezone, timedelta
 from flask import Flask
+
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, 
-    CommandHandler, 
-    MessageHandler, 
-    filters, 
-    ContextTypes
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
 )
 
 # =========================================================
-# 1. लॉगिंग और सेटिंग्स
+# 1. CONFIG & LOGGING
 # =========================================================
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "").strip()
-
-COOLDOWN_SECONDS = 7200  # 2 घंटे का अलर्ट कूलडाउन
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 # =========================================================
-# 2. सभी पेयर्स (खाली लेवल्स - आप खुद सेट और ऐड करेंगे)
+# 2. TICKER MAP (Yahoo Finance Symbols)
 # =========================================================
-WATCH_ASSETS = {
-    # Metals (शुद्ध Spot Ticker)
-    "XAUUSD": {"ticker": "XAUUSD=X", "levels": []},
-    "XAGUSD": {"ticker": "XAGUSD=X", "levels": []},
-    
-    # Forex Majors & Crosses
-    "EURUSD": {"ticker": "EURUSD=X", "levels": []},
-    "GBPUSD": {"ticker": "GBPUSD=X", "levels": []},
-    "USDJPY": {"ticker": "JPY=X", "levels": []},
-    "EURJPY": {"ticker": "EURJPY=X", "levels": []},
-    "GBPJPY": {"ticker": "GBPJPY=X", "levels": []},
-    "AUDUSD": {"ticker": "AUDUSD=X", "levels": []},
-    "USDCAD": {"ticker": "CAD=X", "levels": []},
-    
-    # Indices
-    "US30":   {"ticker": "^DJI", "levels": []},
-    "NAS100": {"ticker": "^IXIC", "levels": []},
-    "DAX40":  {"ticker": "^GDAXI", "levels": []},
-    "UK100":  {"ticker": "^FTSE", "levels": []},
-    
-    # Energy
-    "XTIUSD": {"ticker": "CL=F", "levels": []},
-    
-    # Crypto
-    "BTCUSD": {"ticker": "BTC-USD", "levels": []},
-    "ETHUSD": {"ticker": "ETH-USD", "levels": []},
-    "SOLUSD": {"ticker": "SOL-USD", "levels": []}
+TICKER_MAP = {
+    "XAUUSD": "GC=F", "GOLD": "GC=F",
+    "XAGUSD": "SI=F", "SILVER": "SI=F",
+    "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X",
+    "USDJPY": "USDJPY=X", "EURJPY": "EURJPY=X",
+    "GBPJPY": "GBPJPY=X", "AUDUSD": "AUDUSD=X",
+    "USDCAD": "USDCAD=X", "US30": "^DJI",
+    "NAS100": "^IXIC", "DAX40": "^GDAXI",
+    "UK100": "^FTSE", "XTIUSD": "CL=F",
+    "BTCUSD": "BTC-USD", "BTC": "BTC-USD",
+    "ETHUSD": "ETH-USD", "ETH": "ETH-USD",
+    "SOLUSD": "SOL-USD", "SOL": "SOL-USD",
 }
 
-last_prices = {}
-last_alert_times = {}
+# =========================================================
+# 3. NORMAL KEY LEVELS (आपके भेजे हुए लेवल्स)
+# =========================================================
+USER_KEY_LEVELS = {
+    "XAUUSD": [276.436, 2561.073, 2924.338, 3213.15, 3288.019, 3401.552, 3917.805, 3959.981, 3996.199, 4231.59, 4399.14, 4519.006, 4666.543, 4868.081, 5451.16, 5602.225],
+    "XAGUSD": [],
+    "EURUSD": [0.5633, 0.82311, 0.96756, 1.01829, 1.07362, 1.10763, 1.1459, 1.17075, 1.18448, 1.19227, 1.20728, 1.22827, 1.4102, 1.51442, 1.6038],
+    "GBPUSD": [1.0545, 1.1832, 1.21, 1.2709, 1.301, 1.3098, 1.314, 1.3308, 1.3402, 1.3566, 1.3673, 1.387, 1.593, 1.7191, 1.8331, 2.01, 2.1161, 2.446, 2.644],
+    "USDJPY": [76.161, 101.18, 127.22, 139.889, 146.478, 149.578, 152.206, 153.003, 156.498, 158.994, 160.201, 160.329, 163.988],
+    "EURJPY": [115.29, 134.034, 139.524, 148.617, 155.192, 167.779, 174.954, 180.965, 186.157],
+    "GBPJPY": [128.659, 157.536, 179.781, 196.201, 207.605, 213.315, 239.86, 247.393],
+    "AUDUSD": [0.49047, 0.64412, 0.68787, 0.7219, 0.80424, 0.94974, 1.10005, 1.189],
+    "USDCAD": [0.90585, 0.94469, 1.06204, 1.2013, 1.29517, 1.34818, 1.37708, 1.38291, 1.389741, 1.39812, 1.41546, 1.42964, 1.43952, 1.44514, 1.4542, 1.47937],
+    "US30": [21645.7, 28530.8, 33960.5, 36482.6, 40068.0, 44822.3, 49108.9, 50730.0, 53286.4],
+    "NAS100": [16508.4, 22339.0, 26255.1, 30678.0, 108511.9],
+    "DAX40": [8025.0, 12010.88, 13397.3, 16056.55, 21956.1, 26215.18],
+    "UK100": [7787.2, 8398.4, 8847.3, 9587.2, 9880.5, 10191.8, 10461.2, 10863.4, 10941.1],
+    "XTIUSD": [],
+    "BTCUSD": [61556.58, 73669.56, 74988.74, 75633.23, 76697.17, 78251.18, 79274.78, 80240.59, 82679.42, 83628.36, 85686.88, 87345.85, 87701.49, 88982.81, 90385.0, 91193.63, 91711.6, 92668.922, 93167.85, 96916.06, 98920.67, 101245.6, 102730.93, 106474.49, 117802.73, 126192.07],
+    "ETHUSD": [1065.31, 1563.76, 1970.47, 2220.13, 2407.85, 2760.46, 3014.54, 3776.62, 4827.97],
+    "SOLUSD": [73.39, 122.76, 182.99, 209.65, 253.09]
+}
 
 # =========================================================
-# 3. रेंडर वेब सर्वर (Port 10000 Instant Bind)
+# 4. SPECIAL MAJOR LEVELS (Telegram से जोड़ें)
+# =========================================================
+# यहाँ हमने शुरुआत में खाली रखा है, आप Telegram से भरेंगे
+SPECIAL_LEVELS = {
+    # "XAUUSD": [4000.0, 4500.0],  <-- ऐसे दिखेगा जब आप जोड़ेंगे
+}
+
+# =========================================================
+# 5. COOLDOWN SYSTEM (1 Hour)
+# =========================================================
+LEVEL_ALERT_COOLDOWN = {}
+COOLDOWN_SECONDS = 3600  # 1 घंटा
+
+# =========================================================
+# 6. FLASK SERVER
 # =========================================================
 web_app = Flask(__name__)
 
-@web_app.route('/')
-@web_app.route('/health')
+@web_app.route("/")
+@web_app.route("/health")
 def health():
-    return "Suraj Institutional Multi-Asset Sniper Online 200 OK", 200
+    return "Level Alert Bot is Online", 200
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # =========================================================
-# 4. लाइव टिक और डायनामिक हाई/लो क्लासिफायर
+# 7. TELEGRAM ALERTS
 # =========================================================
-def get_live_tick(ticker_sym: str) -> float:
+async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
+    if not TELEGRAM_CHAT_ID:
+        logger.warning("TELEGRAM_CHAT_ID is not set. Alert skipped.")
+        return
     try:
-        t = yf.Ticker(ticker_sym)
-        fast = t.fast_info
-        if hasattr(fast, 'last_price') and fast.last_price:
-            return float(fast.last_price)
-        df = t.history(period="1d", interval="1m")
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Failed to send alert: {e}")
+
+# =========================================================
+# 8. LEVEL CHECKING JOB
+# =========================================================
+def get_live_price(symbol: str) -> float:
+    try:
+        yf_symbol = TICKER_MAP.get(symbol)
+        if not yf_symbol:
+            return None
+        ticker = yf.Ticker(yf_symbol)
+        df = ticker.history(period="1d", interval="1m")
         if not df.empty:
-            return float(df['Close'].iloc[-1])
+            return float(df["Close"].iloc[-1])
     except Exception as e:
-        logger.warning(f"Tick Fetch Error {ticker_sym}: {e}")
-    return 0.0
+        logger.warning(f"Price fetch error for {symbol}: {e}")
+    return None
 
-def classify_market_levels(asset: str, live_price: float):
-    levels = sorted(WATCH_ASSETS.get(asset, {}).get("levels", []))
-    resistance_highs = [lvl for lvl in levels if lvl > live_price]
-    support_lows = [lvl for lvl in levels if lvl <= live_price]
+def get_tolerance(symbol, current_price):
+    if symbol in ["XAUUSD", "GOLD"]: return 2.0
+    elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: return 15.0
+    elif "JPY" in symbol: return 0.10
+    else: return 0.0010
+
+def is_on_cooldown(level_key, now):
+    if level_key in LEVEL_ALERT_COOLDOWN:
+        time_passed = (now - LEVEL_ALERT_COOLDOWN[level_key]).total_seconds()
+        if time_passed < COOLDOWN_SECONDS:
+            return True
+    return False
+
+async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("=== Checking Key Levels ===")
+    now = datetime.now(timezone.utc)
     
-    immediate_resistance = resistance_highs[0] if resistance_highs else "कोई नहीं"
-    immediate_support = support_lows[-1] if support_lows else "कोई नहीं"
-    
-    return {
-        "resistance_highs": resistance_highs,
-        "support_lows": support_lows,
-        "immediate_high": immediate_resistance,
-        "immediate_low": immediate_support
-    }
+    # सारे सिंबल्स पर लूप चलाएं
+    for symbol in TICKER_MAP.keys():
+        # अगर सिंबल की कोई भी लिस्ट खाली है तो स्किप करें
+        if symbol not in USER_KEY_LEVELS and symbol not in SPECIAL_LEVELS:
+            continue
+            
+        current_price = get_live_price(symbol)
+        if current_price is None:
+            continue
+            
+        # ---- 1. चेक करें नॉर्मल लेवल्स (🟢) ----
+        if symbol in USER_KEY_LEVELS:
+            for level in USER_KEY_LEVELS[symbol]:
+                level_key = f"NORMAL_{symbol}_{level}"
+                if abs(current_price - level) <= get_tolerance(symbol, current_price):
+                    if is_on_cooldown(level_key, now): continue
+                    
+                    direction = "⬆️ UPWARDS" if current_price >= level else "⬇️ DOWNWARDS"
+                    msg = (
+                        f"🟢 *NORMAL LEVEL CROSSED*\n"
+                        f"━━━━━━━━━━━━━━━━━\n"
+                        f"📊 *Asset:* {symbol}\n"
+                        f"🎯 *Level:* `{level}`\n"
+                        f"💰 *Price:* `{current_price:.5f}`\n"
+                        f"📉 *Direction:* {direction}\n"
+                        f"⏳ _1 Hour Cooldown_"
+                    )
+                    await send_alert(context, msg)
+                    LEVEL_ALERT_COOLDOWN[level_key] = now
+        
+        # ---- 2. चेक करें स्पेशल मेजर लेवल्स (🚨) ----
+        if symbol in SPECIAL_LEVELS:
+            for level in SPECIAL_LEVELS[symbol]:
+                level_key = f"SPECIAL_{symbol}_{level}"
+                if abs(current_price - level) <= get_tolerance(symbol, current_price):
+                    if is_on_cooldown(level_key, now): continue
+                    
+                    direction = "⬆️ UPWARDS" if current_price >= level else "⬇️ DOWNWARDS"
+                    msg = (
+                        f"🚨🚨 **SPECIAL MAJOR ALERT** 🚨🚨\n"
+                        f"━━━━━━━━━━━━━━━━━\n"
+                        f"⚠️ *MAJOR LEVEL HAS BEEN CROSSED!*\n"
+                        f"━━━━━━━━━━━━━━━━━\n"
+                        f"📊 *Asset:* **{symbol}**\n"
+                        f"🎯 *Major Level:* `{level}`\n"
+                        f"💰 *Current Price:* `{current_price:.5f}`\n"
+                        f"📉 *Direction:* {direction}\n"
+                        f"━━━━━━━━━━━━━━━━━\n"
+                        f"🔥 *ध्यान से ट्रेड करें, यह बहुत बड़ा लेवल है!*\n"
+                        f"⏳ _1 Hour Cooldown_"
+                    )
+                    await send_alert(context, msg)
+                    LEVEL_ALERT_COOLDOWN[level_key] = now
 
 # =========================================================
-# 5. जेमिनी 3.5 फ़्लैश लाइट इंजन
-# =========================================================
-def query_gemini_auto(prompt_text: str, image_bytes: bytes = None) -> str:
-    if not GEMINI_API_KEY:
-        return "Gemini API Key नहीं मिली।"
-
-    model_endpoint = "models/gemini-3.5-flash-lite"
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model_endpoint}:generateContent?key={GEMINI_API_KEY}"
-
-    parts = [{"text": prompt_text}]
-    if image_bytes:
-        parts.append({
-            "inline_data": {
-                "mime_type": "image/jpeg",
-                "data": base64.b64encode(image_bytes).decode("utf-8")
-            }
-        })
-
-    payload = {"contents": [{"parts": parts}]}
-    headers = {"Content-Type": "application/json"}
-
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        res_json = response.json()
-        if "candidates" in res_json and len(res_json["candidates"]) > 0:
-            candidate = res_json["candidates"][0]
-            if "content" in candidate and "parts" in candidate["content"]:
-                return candidate["content"]["parts"][0]["text"].strip()
-        if "error" in res_json:
-            return f"AI इंजन एरर: {res_json['error'].get('message', 'Unknown')}"
-    except Exception as e:
-        return f"कनेक्शन एरर: {str(e)}"
-    return "AI से उत्तर प्राप्त नहीं हुआ।"
-
-# =========================================================
-# 6. बैकग्राउंड प्राइस वॉचर (यूज़र लेवल्स पर ऑटो अलर्ट्स)
-# =========================================================
-def background_price_watcher(bot_app):
-    global last_prices, last_alert_times
-    time.sleep(10)
-    
-    while True:
-        try:
-            target_chat = ALLOWED_CHAT_ID
-            if not target_chat:
-                time.sleep(15)
-                continue
-
-            for asset, conf in WATCH_ASSETS.items():
-                levels = conf.get("levels", [])
-                if not levels:
-                    continue
-
-                sym = conf["ticker"]
-                current_price = get_live_tick(sym)
-                if current_price <= 0.0:
-                    continue
-
-                prev_price = last_prices.get(asset, current_price)
-                last_prices[asset] = current_price
-
-                current_time = time.time()
-
-                for lvl in levels:
-                    alert_key = f"{asset}_{lvl}"
-                    last_time = last_alert_times.get(alert_key, 0)
-
-                    # 2 घंटे का कूलडाउन
-                    if current_time - last_time < COOLDOWN_SECONDS:
-                        continue
-
-                    # नीचे से ऊपर ब्रेकआउट (Bullish Breakout)
-                    if prev_price < lvl and current_price >= lvl:
-                        cls = classify_market_levels(asset, current_price)
-                        msg = (
-                            f"🟢 **[BULLISH BREAKOUT ALERT]**\n\n"
-                            f"• एसेट: **{asset}**\n"
-                            f"• टूटा हुआ लेवल: **{lvl}**\n"
-                            f"• लाइव भाव: **{current_price}**\n"
-                            f"• स्टेटस: मार्केट ने लेवल को नीचे से ऊपर तोड़ा है।\n"
-                            f"• अगला हाई/रेजिस्टेंस ज़ोन: **{cls['immediate_high']}**\n"
-                            f"• नया सपोर्ट बना: **{lvl}**\n"
-                            f"• एक्शन: 15M कैंडल क्लोज और वॉल्यूम कन्फर्मेशन पर बाय देखें।"
-                        )
-                        requests.post(
-                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                            json={"chat_id": target_chat, "text": msg, "parse_mode": "Markdown"}
-                        )
-                        last_alert_times[alert_key] = current_time
-
-                    # ऊपर से नीचे ब्रेकडाउन (Bearish Breakdown)
-                    elif prev_price > lvl and current_price <= lvl:
-                        cls = classify_market_levels(asset, current_price)
-                        msg = (
-                            f"🔴 **[BEARISH BREAKDOWN ALERT]**\n\n"
-                            f"• एसेट: **{asset}**\n"
-                            f"• टूटा हुआ लेवल: **{lvl}**\n"
-                            f"• लाइव भाव: **{current_price}**\n"
-                            f"• स्टेटस: मार्केट ने लेवल को ऊपर से नीचे तोड़ा है।\n"
-                            f"• अगला लो/सपोर्ट ज़ोन: **{cls['immediate_low']}**\n"
-                            f"• नया रेजिस्टेंस बना: **{lvl}**\n"
-                            f"• एक्शन: सपोर्ट टूटने के बाद रीटेस्ट या बेयरिश शॉर्ट एंट्री देखें।"
-                        )
-                        requests.post(
-                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                            json={"chat_id": target_chat, "text": msg, "parse_mode": "Markdown"}
-                        )
-                        last_alert_times[alert_key] = current_time
-
-        except Exception as e:
-            logger.error(f"वॉचर लूप एरर: {e}")
-
-        time.sleep(20)
-
-# =========================================================
-# 7. टेलीग्राम कमांड्स और हैंडलर्स (Set, Add, Clear, Levels)
+# 9. TELEGRAM COMMANDS
 # =========================================================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
+    global TELEGRAM_CHAT_ID
+    TELEGRAM_CHAT_ID = str(update.effective_chat.id)
+    
     msg = (
-        f"🚀 **मल्टी-एसेट स्नाइपर बॉट एक्टिव!**\n\n"
-        f"• आपकी चैट ID: `{chat_id}`\n\n"
-        f"📌 **कमांड्स:**\n"
-        f"1. **पूरे नए लेवल्स डालने के लिए:**\n"
-        f"`/setlevels BTCUSD 82500, 83100, 84200`\n"
-        f"2. **मौजूदा लेवल्स में और नए लेवल्स जोड़ने के लिए:**\n"
-        f"`/addlevels BTCUSD 85500, 86200`\n"
-        f"3. **लेवल्स हटाने (खाली करने) के लिए:**\n"
-        f"`/clearlevels BTCUSD`\n"
-        f"4. **सेव किए गए लेवल्स देखने के लिए:**\n"
-        f"`/levels`\n\n"
-        f"• चार्ट की फोटो भेजें, जेमिनी The5ers $2,500 के नियमों पर प्लान देगी।"
+        "🚀 *Level Alert Bot Online*\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "मैं आपके सारे लेवल्स ट्रैक कर रहा हूँ।\n\n"
+        "*कमांड्स:*\n"
+        "👉 `/addleve GOLD 4350.50` (नया नॉर्मल लेवल जोड़ें)\n"
+        "👉 `/addmajor GOLD 4500.00` (नया मेजर/स्पेशल लेवल जोड़ें)\n"
+        "👉 `/removemajor GOLD 4500.00` (मेजर लेवल हटाएं)\n"
+        "👉 `/status` (बोट की स्थिति देखें)"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lines = ["📡 **आपके द्वारा सेट किए गए लेवल्स:**\n"]
-    for asset, conf in WATCH_ASSETS.items():
-        lvls = conf.get('levels', [])
-        status = ", ".join(map(str, lvls)) if lvls else "खाली (कोई लेवल नहीं)"
-        lines.append(f"🔹 **{asset}:** {status}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-async def set_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """पुराने हटाकर बिल्कुल नए लेवल्स ओवरराइट करेगा (स्पेस-प्रूफ)"""
+async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
-        if len(args) < 2:
-            await update.message.reply_text("उपयोग: `/setlevels XAUUSD 4120, 4138, 4162`", parse_mode="Markdown")
-            return
-        asset = args[0].upper()
-        # स्पेस वाले सभी टुकड़ों को जोड़कर कॉमा से अलग करना
-        raw_text = "".join(args[1:])
-        lvls = [float(x.strip()) for x in raw_text.split(",") if x.strip()]
-        if asset in WATCH_ASSETS:
-            WATCH_ASSETS[asset]["levels"] = sorted(list(set(lvls)))
-            await update.message.reply_text(
-                f"✅ **{asset}** के नए लेवल्स सेट हो गए (कुल {len(WATCH_ASSETS[asset]['levels'])}):\n`{WATCH_ASSETS[asset]['levels']}`", 
-                parse_mode="Markdown"
-            )
-        else:
-            await update.message.reply_text(f"एसेट {asset} लिस्ट में नहीं मिला।")
+        if len(args) != 2: return await update.message.reply_text("⚠️ फॉर्मेट: `/addleve GOLD 4350.50`", parse_mode="Markdown")
+        
+        symbol, price = args[0].upper(), float(args[1])
+        if symbol not in TICKER_MAP: return await update.message.reply_text(f"❌ {symbol} सिंबल नहीं है।")
+            
+        if symbol not in USER_KEY_LEVELS: USER_KEY_LEVELS[symbol] = []
+        USER_KEY_LEVELS[symbol].append(price)
+        
+        await update.message.reply_text(f"✅ *{symbol}* में नॉर्मल लेवल जुड़ गया: `{price}`", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"एरर: {e}")
+        await update.message.reply_text(f"❌ एरर: {str(e)}")
 
-async def add_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """पुराने लेवल्स को रखेगा और नए लेवल्स जोड़ देगा (Add Levels)"""
+async def add_major_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
-        if len(args) < 2:
-            await update.message.reply_text("उपयोग: `/addlevels BTCUSD 85500, 86200`", parse_mode="Markdown")
-            return
-        asset = args[0].upper()
-        raw_text = "".join(args[1:])
-        new_lvls = [float(x.strip()) for x in raw_text.split(",") if x.strip()]
-        if asset in WATCH_ASSETS:
-            current_lvls = WATCH_ASSETS[asset].get("levels", [])
-            # पुराने और नए लेवल्स को मिलाकर डुप्लीकेट हटाना और सॉर्ट करना
-            combined = sorted(list(set(current_lvls + new_lvls)))
-            WATCH_ASSETS[asset]["levels"] = combined
-            await update.message.reply_text(
-                f"➕ **{asset}** में नए लेवल्स जुड़ गए (कुल {len(combined)}):\n`{combined}`", 
-                parse_mode="Markdown"
-            )
-        else:
-            await update.message.reply_text(f"एसेट {asset} लिस्ट में नहीं मिला।")
+        if len(args) != 2: return await update.message.reply_text("⚠️ फॉर्मेट: `/addmajor GOLD 4500.00`", parse_mode="Markdown")
+        
+        symbol, price = args[0].upper(), float(args[1])
+        if symbol not in TICKER_MAP: return await update.message.reply_text(f"❌ {symbol} सिंबल नहीं है।")
+            
+        if symbol not in SPECIAL_LEVELS: SPECIAL_LEVELS[symbol] = []
+        SPECIAL_LEVELS[symbol].append(price)
+        
+        await update.message.reply_text(f"🚨 *{symbol}* में मेजर/स्पेशल लेवल जुड़ गया: `{price}`\nअब इसका अलर्ट बाकी लेवल्स से अलग आएगा!", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"एरर: {e}")
+        await update.message.reply_text(f"❌ एरर: {str(e)}")
 
-async def clear_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def remove_major_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
-        if len(args) < 1:
-            await update.message.reply_text("उपयोग: `/clearlevels XAUUSD`", parse_mode="Markdown")
-            return
-        asset = args[0].upper()
-        if asset in WATCH_ASSETS:
-            WATCH_ASSETS[asset]["levels"] = []
-            await update.message.reply_text(f"🗑️ **{asset}** के सारे लेवल्स क्लियर (खाली) कर दिए गए हैं।")
+        if len(args) != 2: return await update.message.reply_text("⚠️ फॉर्मेट: `/removemajor GOLD 4500.00`", parse_mode="Markdown")
+        
+        symbol, price = args[0].upper(), float(args[1])
+        if symbol in SPECIAL_LEVELS and price in SPECIAL_LEVELS[symbol]:
+            SPECIAL_LEVELS[symbol].remove(price)
+            await update.message.reply_text(f"✅ *{symbol}* से मेजर लेवल `{price}` हटा दिया गया।", parse_mode="Markdown")
         else:
-            await update.message.reply_text(f"एसेट {asset} लिस्ट में नहीं मिला।")
+            await update.message.reply_text(f"❌ यह लेवल {symbol} की मेजर लिस्ट में नहीं मिला।")
     except Exception as e:
-        await update.message.reply_text(f"एरर: {e}")
+        await update.message.reply_text(f"❌ एरर: {str(e)}")
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👁️ चार्ट स्कैन हो रहा है, लाइव भाव के आधार पर एक्शन प्लान तैयार किया जा रहा है...")
-    try:
-        photo_file = await update.message.photo[-1].get_file()
-        image_bytes = await photo_file.download_as_bytearray()
-        caption = update.message.caption or ""
-
-        prompt = f"""
-आप $2,500 The5ers हाई स्टेक्स खाते के संस्थागत रिस्क मैनेजर हैं।
-इस ट्रेडिंग चार्ट का विश्लेषण करें और कैप्शन ध्यान से देखें: {caption}
-
-नियम:
-1. चार्ट के दाहिने प्राइस स्केल (Right Axis) पर जो लाल या हरे बॉक्स में करंट मार्केट प्राइस दिख रहा है, उसी को 100% सही लाइव भाव मानें।
-2. The5ers $2,500 अकाउंट: फिक्स रिस्क $25 (1%)।
-3. मैक्सिमम स्टॉप लॉस 40 पिप्स (गोल्ड में $1 = 10 पिप्स, यानी अधिकतम $4 का SL)।
-4. 2-ट्रिगर ऑर्डर: 1:1 RRR पर 50% लॉट बुक + SL कॉस्ट पर, और 1:3 RRR मुख्य रनर।
-5. केवल अवॉइड न कहें, बुलिश और बेयरिश दोनों तरफ का एक्शन प्लान दें।
-
-इस फॉर्मेट में हिंदी/हिंग्लिश में उत्तर दें:
-🎯 **मार्केट स्ट्रक्चर स्थिति:** [सपोर्ट/रेजिस्टेंस व चार्ट स्ट्रक्चर]
-📊 **पहचाना गया भाव व स्थिति:** [Current Visible Price from chart axis]
-
-🟢 **बुलिश प्लान (ऊपर निकलने पर):**
-• ट्रिगर: [लेवल]
-• बाय एंट्री: [भाव]
-• स्टॉप लॉस: [भाव] (मैक्स 40 पिप्स)
-• टारगेट 1 (1:1 RRR): [भाव] (50% बुक + SL कॉस्ट पर)
-• टारगेट 2 (1:3 RRR): [भाव]
-
-🔴 **बेयरिश प्लान (नीचे गिरने पर):**
-• ट्रिगर: [लेवल]
-• सेल एंट्री: [भाव]
-• स्टॉप लॉस: [भाव] (मैक्स 40 पिप्स)
-• टारगेट 1 (1:1 RRR): [भाव] (50% बुक + SL कॉस्ट पर)
-• टारगेट 2 (1:3 RRR): [भाव]
-
-💡 **मास्टर फैसला:** [अभी करंट प्राइस पर क्या एक्शन लेना है]
-"""
-        res = query_gemini_auto(prompt, bytes(image_bytes))
-        await update.message.reply_text(res)
-    except Exception as e:
-        await update.message.reply_text(f"इमेज स्कैन एरर: {e}")
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text.strip()
-    if user_text.startswith('/'):
-        return
-
-    await update.message.reply_text("🔍 जेमिनी से विश्लेषण हो रहा है...")
-    prompt = f"""
-आप The5ers $2,500 अकाउंट के रिस्क मैनेजर हैं। 
-उपयोगकर्ता का सवाल: {user_text}
-
-40 पिप्स मैक्स SL और 1:1 व 1:3 RRR के हिसाब से सटीक एक्शन प्लान दें।
-"""
-    res = query_gemini_auto(prompt, None)
-    await update.message.reply_text(res)
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        f"🤖 *Bot Status:* Online\n"
+        f"📊 *Tracked Assets:* {len(USER_KEY_LEVELS)} pairs\n"
+        f"🚨 *Special Major Levels:* {sum(len(v) for v in SPECIAL_LEVELS.values())} active\n"
+        f"⏳ *Active Cooldowns:* {len(LEVEL_ALERT_COOLDOWN)} levels\n"
+        f"⏱️ *Scan Interval:* Every 15 minutes"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 # =========================================================
-# 8. मुख्य फ़ंक्शन
+# 10. MAIN FUNCTION
 # =========================================================
 def main():
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
 
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN नहीं मिला!")
+        logger.error("TELEGRAM_BOT_TOKEN missing!")
         web_thread.join()
         return
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("levels", levels_cmd))
-    app.add_handler(CommandHandler("setlevels", set_levels_cmd))
-    app.add_handler(CommandHandler("addlevels", add_levels_cmd))
-    app.add_handler(CommandHandler("clearlevels", clear_levels_cmd))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("addleve", add_normal_level_cmd))
+    app.add_handler(CommandHandler("addmajor", add_major_level_cmd))
+    app.add_handler(CommandHandler("removemajor", remove_major_level_cmd))
 
-    watcher_thread = threading.Thread(target=background_price_watcher, args=(app,), daemon=True)
-    watcher_thread.start()
+    if app.job_queue:
+        app.job_queue.run_repeating(
+            check_key_levels_job,
+            interval=15 * 60, 
+            first=30,
+        )
+        logger.info("JobQueue started - Level check every 15 min")
 
-    logger.info("Multi-Asset Dynamic Sniper चालू है...")
-    app.run_polling()
+    logger.info("Bot running...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
