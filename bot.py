@@ -43,7 +43,7 @@ TICKER_MAP = {
 }
 
 # =========================================================
-# 3. NORMAL KEY LEVELS (आपके भेजे हुए लेवल्स)
+# 3. NORMAL KEY LEVELS
 # =========================================================
 USER_KEY_LEVELS = {
     "XAUUSD": [276.436, 2561.073, 2924.338, 3213.15, 3288.019, 3401.552, 3917.805, 3959.981, 3996.199, 4231.59, 4399.14, 4519.006, 4666.543, 4868.081, 5451.16, 5602.225],
@@ -68,10 +68,7 @@ USER_KEY_LEVELS = {
 # =========================================================
 # 4. SPECIAL MAJOR LEVELS (Telegram से जोड़ें)
 # =========================================================
-# यहाँ हमने शुरुआत में खाली रखा है, आप Telegram से भरेंगे
-SPECIAL_LEVELS = {
-    # "XAUUSD": [4000.0, 4500.0],  <-- ऐसे दिखेगा जब आप जोड़ेंगे
-}
+SPECIAL_LEVELS = {}
 
 # =========================================================
 # 5. COOLDOWN SYSTEM (1 Hour)
@@ -138,10 +135,11 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("=== Checking Key Levels ===")
     now = datetime.now(timezone.utc)
     
-    # सारे सिंबल्स पर लूप चलाएं
-    for symbol in TICKER_MAP.keys():
-        # अगर सिंबल की कोई भी लिस्ट खाली है तो स्किप करें
-        if symbol not in USER_KEY_LEVELS and symbol not in SPECIAL_LEVELS:
+    # बग फिक्स: सिर्फ उन्हीं सिंबल्स को चेक करें जिनमें लेवल्स हैं
+    active_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
+    
+    for symbol in active_symbols:
+        if symbol not in TICKER_MAP:
             continue
             
         current_price = get_live_price(symbol)
@@ -204,12 +202,28 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━\n"
         "मैं आपके सारे लेवल्स ट्रैक कर रहा हूँ।\n\n"
         "*कमांड्स:*\n"
+        "👉 `/levels` (देखें कौन से लेवल्स सेव हैं)\n"
         "👉 `/addleve GOLD 4350.50` (नया नॉर्मल लेवल जोड़ें)\n"
         "👉 `/addmajor GOLD 4500.00` (नया मेजर/स्पेशल लेवल जोड़ें)\n"
         "👉 `/removemajor GOLD 4500.00` (मेजर लेवल हटाएं)\n"
         "👉 `/status` (बोट की स्थिति देखें)"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """नया कमांड: यह बताएगा कि बोट के पास कौन से लेवल्स हैं"""
+    total_normal = sum(len(v) for v in USER_KEY_LEVELS.values())
+    total_special = sum(len(v) for v in SPECIAL_LEVELS.values())
+    
+    text = (
+        f"📊 *आपके सेव किए गए लेवल्स:*\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🟢 *नॉर्मल लेवल्स:* {total_normal}\n"
+        f"🚨 *मेजर/स्पेशल लेवल्स:* {total_special}\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"👉 नया लेवल जोड़ने के लिए `/addleve` या `/addmajor` यूज़ करें।"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -279,7 +293,15 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # ---- ERROR HANDLER (बोट क्रैश न हो इसलिए) ----
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.warning(f"Update {update} caused error: {context.error}")
+
+    app.add_error_handler(error_handler)
+    # ----------------------------------------------
+
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("levels", levels_cmd)) # नया कमांड
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("addleve", add_normal_level_cmd))
     app.add_handler(CommandHandler("addmajor", add_major_level_cmd))
