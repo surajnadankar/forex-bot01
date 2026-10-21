@@ -11,6 +11,8 @@ from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
+    MessageHandler, # नया जोड़ा गया है
+    filters,        # नया जोड़ा गया है
     ContextTypes,
 )
 
@@ -103,6 +105,7 @@ async def keep_alive_job():
     while True:
         try:
             import requests
+            # अपनी Render सर्विस का URL यहाँ डालें
             requests.get("https://forex-bot01.onrender.com/health", timeout=10)
             logger.info("Keep-alive ping sent.")
         except Exception:
@@ -223,7 +226,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ मैंने आपकी Chat ID सेव कर ली है। अब अलर्ट पक्का आएंगे।\n\n"
         "*कमांड्स:*\n"
         "👉 `/levels` (सारे लेवल्स देखें)\n"
-        "👉 `/addleve GOLD 4350` (नया नॉर्मल लेवल)\n"
+        "👉 `/addlevel GOLD 4350` (नया नॉर्मल लेवल)\n"
         "👉 `/addmajor GOLD 4500` (नया मेजर लेवल)"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -255,10 +258,13 @@ async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
-        if len(args) != 2: return await update.message.reply_text("⚠️ फॉर्मेट: `/addleve GOLD 4350`", parse_mode="Markdown")
+        if len(args) != 2: 
+            return await update.message.reply_text("⚠️ फॉर्मेट: `/addlevel GOLD 4350`", parse_mode="Markdown")
         symbol, price = args[0].upper(), float(args[1])
-        if symbol not in TICKER_MAP: return await update.message.reply_text(f"❌ {symbol} सिंबल नहीं है।")
-        if symbol not in USER_KEY_LEVELS: USER_KEY_LEVELS[symbol] = []
+        if symbol not in TICKER_MAP: 
+            return await update.message.reply_text(f"❌ {symbol} सिंबल नहीं है।")
+        if symbol not in USER_KEY_LEVELS: 
+            USER_KEY_LEVELS[symbol] = []
         USER_KEY_LEVELS[symbol].append(price)
         await update.message.reply_text(f"✅ *{symbol}* में लेवल जुड़ गया: `{price}`", parse_mode="Markdown")
     except Exception as e:
@@ -267,10 +273,13 @@ async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYP
 async def add_major_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
-        if len(args) != 2: return await update.message.reply_text("⚠️ फॉर्मेट: `/addmajor GOLD 4500`", parse_mode="Markdown")
+        if len(args) != 2: 
+            return await update.message.reply_text("⚠️ फॉर्मेट: `/addmajor GOLD 4500`", parse_mode="Markdown")
         symbol, price = args[0].upper(), float(args[1])
-        if symbol not in TICKER_MAP: return await update.message.reply_text(f"❌ {symbol} सिंबल नहीं है।")
-        if symbol not in SPECIAL_LEVELS: SPECIAL_LEVELS[symbol] = []
+        if symbol not in TICKER_MAP: 
+            return await update.message.reply_text(f"❌ {symbol} सिंबल नहीं है।")
+        if symbol not in SPECIAL_LEVELS: 
+            SPECIAL_LEVELS[symbol] = []
         SPECIAL_LEVELS[symbol].append(price)
         await update.message.reply_text(f"🚨 *{symbol}* में मेजर लेवल जुड़ गया: `{price}`", parse_mode="Markdown")
     except Exception as e:
@@ -312,13 +321,21 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("levels", levels_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("addleve", add_normal_level_cmd))
+    
+    # ✅ दोनों स्पेलिंग (/addlevel और /addleve) के लिए एक साथ हैंडलर
+    app.add_handler(CommandHandler(["addlevel", "addleve"], add_normal_level_cmd))
     app.add_handler(CommandHandler("addmajor", add_major_level_cmd))
+    
+    # ✅ अगर कोई गलत कमांड टाइप करे तो जवाब दे
+    async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("❌ यह कमांड मौजूद नहीं है। सही कमांड्स के लिए /start भेजें।")
+    
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_cmd))
 
     if app.job_queue:
         # 15 मिनट पर लेवल चेक
         app.job_queue.run_repeating(check_key_levels_job, interval=15 * 60, first=30)
-        # खुद को जगाए रखने वाला जॉब (Render स्लीप से बचने के लिए)
+        # खुद को जगाए रखने वाला जॉब
         app.job_queue.run_once(lambda context: asyncio.create_task(keep_alive_job()), when=5)
         
         logger.info("JobQueue started.")
