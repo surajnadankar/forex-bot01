@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 import threading
 from datetime import datetime, timezone
@@ -95,7 +96,7 @@ def run_web_server():
 # =========================================================
 async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
     if not TELEGRAM_CHAT_ID:
-        logger.warning("TELEGRAM_CHAT_ID is not set. Alert skipped.")
+        logger.warning("TELEGRAM_CHAT_ID is not set. Alert skipped. Please send /start to bot.")
         return
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
@@ -143,6 +144,8 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
             
         current_price = get_live_price(symbol)
         if current_price is None:
+            # अगर डेटा नहीं मिला तो अगले सिंबल पर जाएं
+            await asyncio.sleep(2)
             continue
             
         # ---- 1. चेक करें नॉर्मल लेवल्स (🟢) ----
@@ -189,6 +192,9 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
                     await send_alert(context, msg)
                     LEVEL_ALERT_COOLDOWN[level_key] = now
 
+        # ✅ हर सिंबल के बाद 2 सेकंड का ब्रेक (Rate limit से बचने के लिए)
+        await asyncio.sleep(2)
+
 # =========================================================
 # 9. TELEGRAM COMMANDS
 # =========================================================
@@ -199,11 +205,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "🚀 *Level Alert Bot Online*\n"
         "━━━━━━━━━━━━━━━━━\n"
-        "मैं आपके सारे लेवल्स ट्रैक कर रहा हूँ।\n\n"
+        "✅ मैंने आपकी Chat ID सेव कर ली है। अब अलर्ट सही जगह आएंगे।\n\n"
         "*कमांड्स:*\n"
         "👉 `/levels` (देखें कौन से लेवल्स सेव हैं)\n"
         "👉 `/addleve GOLD 4350.50` (नया नॉर्मल लेवल जोड़ें)\n"
-        "👉 `/addmajor GOLD 4500.00` (नया मेजर/स्पेशल लेवल जोड़ें)\n"
+        "👉 `/addmajor GOLD 4500.00` (नया मेजर लेवल जोड़ें)\n"
         "👉 `/removemajor GOLD 4500.00` (मेजर लेवल हटाएं)\n"
         "👉 `/status` (बोट की स्थिति देखें)"
     )
@@ -249,7 +255,7 @@ async def add_major_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         if symbol not in SPECIAL_LEVELS: SPECIAL_LEVELS[symbol] = []
         SPECIAL_LEVELS[symbol].append(price)
         
-        await update.message.reply_text(f"🚨 *{symbol}* में मेजर/स्पेशल लेवल जुड़ गया: `{price}`\nअब इसका अलर्ट बाकी लेवल्स से अलग आएगा!", parse_mode="Markdown")
+        await update.message.reply_text(f"🚨 *{symbol}* में मेजर/स्पेशल लेवल जुड़ गया: `{price}`", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ एरर: {str(e)}")
 
@@ -278,7 +284,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # =========================================================
-# 10. MAIN FUNCTION (UPDATED WITH TIMEOUTS)
+# 10. MAIN FUNCTION
 # =========================================================
 def main():
     web_thread = threading.Thread(target=run_web_server, daemon=True)
@@ -289,7 +295,7 @@ def main():
         web_thread.join()
         return
 
-    # ✅ यहाँ टाइमआउट सेटिंग्स जोड़ दी गई हैं
+    # ✅ टाइमआउट सेटिंग्स ताकि नेटवर्क एरर पर बोट क्रैश न हो
     app = (
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
@@ -303,7 +309,7 @@ def main():
         .build()
     )
 
-    # ---- ERROR HANDLER ----
+    # ✅ Global Error Handler
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.warning(f"Update {update} caused error: {context.error}")
 
