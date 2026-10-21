@@ -216,19 +216,41 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # पहले एक छोटा सा शुरुआती मैसेज भेजें
     total_normal = sum(len(v) for v in USER_KEY_LEVELS.values())
     total_special = sum(len(v) for v in SPECIAL_LEVELS.values())
     
-    text = (
-        f"📊 *आपके सेव किए गए लेवल्स:*\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"🟢 *नॉर्मल लेवल्स:* {total_normal}\n"
-        f"🚨 *मेजर/स्पेशल लेवल्स:* {total_special}\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"👉 नया लेवल जोड़ने के लिए `/addleve` या `/addmajor` यूज़ करें।"
+    await update.message.reply_text(
+        f"⏳ *आपके सेव किए गए लेवल्स की लिस्ट आ रही है...*\n"
+        f"🟢 नॉर्मल लेवल्स: {total_normal}\n"
+        f"🚨 मेजर लेवल्स: {total_special}\n"
+        f"(नीचे हर एसेट की लिस्ट दी गई है)", 
+        parse_mode="Markdown"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
 
+    # सारे यूनिक सिंबल्स निकालें जिनमें लेवल्स हैं
+    active_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
+
+    for symbol in sorted(active_symbols):
+        normal_lvls = USER_KEY_LEVELS.get(symbol, [])
+        major_lvls = SPECIAL_LEVELS.get(symbol, [])
+        
+        if not normal_lvls and not major_lvls:
+            continue
+            
+        text = f"📊 *Asset: {symbol}*\n"
+        text += "━━━━━━━━━━━━━━━━━\n"
+        
+        if normal_lvls:
+            text += f"🟢 *Normal Levels:*\n`{', '.join(map(str, normal_lvls))}`\n\n"
+        else:
+            text += f"🟢 *Normal Levels:* खाली\n\n"
+            
+        if major_lvls:
+            text += f"🚨 *Major Levels:*\n`{', '.join(map(str, major_lvls))}`\n"
+            
+        # हर एसेट का मैसेज अलग भेजें
+        await update.message.reply_text(text, parse_mode="Markdown")
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
