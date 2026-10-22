@@ -162,7 +162,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
             
         price_data = get_live_price_and_range(symbol)
         if price_data is None:
-            await asyncio.sleep(2)
+        await asyncio.sleep(4)
             continue
             
         current_price = price_data["current"]
