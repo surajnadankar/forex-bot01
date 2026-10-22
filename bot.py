@@ -266,8 +266,6 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN missing!")
         return
 
-    # ❌ पहले updater(None) लिखा था, जो run_webhook के लिए गलत था
-    # ✅ अब updater को हटा दिया है ताकि यह डिफ़ॉल्ट रूप से काम करे
     telegram_app = (
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
