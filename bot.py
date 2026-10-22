@@ -11,8 +11,6 @@ from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
-    filters,
     ContextTypes,
 )
 
@@ -255,44 +253,52 @@ async def add_major_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ एरर: {str(e)}")
 
 # =========================================================
-# 8. MAIN
+# 8. MAIN (Fixed Port Conflict)
 # =========================================================
-def main():
-    global telegram_app
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN missing!")
-        return
-
-    telegram_app = (
+async def run_bot():
+    """Telegram बोट को चलाने वाला फंक्शन"""
+    app = (
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
         .read_timeout(30).write_timeout(30).connect_timeout(15).pool_timeout(5)
         .build()
     )
 
-    telegram_app.add_handler(CommandHandler("start", start_cmd))
-    telegram_app.add_handler(CommandHandler(["addlevel", "addleve"], add_normal_level_cmd))
-    telegram_app.add_handler(CommandHandler("addmajor", add_major_level_cmd))
-    
-    if telegram_app.job_queue:
-        telegram_app.job_queue.run_repeating(check_key_levels_job, interval=2 * 60, first=10)
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler(["addlevel", "addleve"], add_normal_level_cmd))
+    app.add_handler(CommandHandler("addmajor", add_major_level_cmd))
 
-    async def post_init(application):
-        webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
-        await application.bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook set to: {webhook_url}")
+    if app.job_queue:
+        app.job_queue.run_repeating(check_key_levels_job, interval=2 * 60, first=10)
 
-    telegram_app.post_init = post_init
+    await app.initialize()
+    await app.start()
     
-    logger.info("Bot running in Webhook mode with PDH/PDL Tracking...")
-    telegram_app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
-    )
+    # Telegram को Webhook URL सेट करें (अगर वो सेट न हो तो)
+    webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
+    await app.bot.set_webhook(url=webhook_url)
+    logger.info(f"Webhook set to: {webhook_url}")
+
+    # यहीं पर रुक जाएगा (क्योंकि Flask ही पोर्ट संभाल रहा है)
+    await asyncio.Event().wait()
+
+def main():
+    global telegram_app
+    web_thread = threading.Thread(target=run_flask, daemon=True)
+    web_thread.start()
+
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN missing!")
+        return
+
+    # asyncio को अलग से चलाएं ताकि बोट और Flask अलग-अलग काम करें
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        loop.run_until_complete(run_bot())
+    except KeyboardInterrupt:
+        pass
 
 if __name__ == "__main__":
     main()
