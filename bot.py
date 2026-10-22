@@ -78,10 +78,11 @@ LEVEL_ALERT_COOLDOWN = {}
 COOLDOWN_SECONDS = 3600
 
 # =========================================================
-# 4. TELEGRAM APP & FLASK SETUP
+# 4. FLASK APP & TELEGRAM APP
 # =========================================================
-telegram_app = None
 flask_app = Flask(__name__)
+telegram_app = None
+bot_loop = None
 
 @flask_app.route("/")
 @flask_app.route("/health")
@@ -91,14 +92,10 @@ def health():
 @flask_app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
 def webhook():
     """Telegram से आए मैसेज को रिसीव करेगा"""
-    if telegram_app:
-        # asyncio के इवेंट लूप में अपडेट डालेगा
-        asyncio.run_coroutine_threadsafe(
-            telegram_app.update_queue.put(
-                Update.de_json(request.get_json(force=True), telegram_app.bot)
-            ),
-            telegram_app.loop
-        )
+    if telegram_app and bot_loop:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, telegram_app.bot)
+        asyncio.run_coroutine_threadsafe(telegram_app.update_queue.put(update), bot_loop)
     return "OK", 200
 
 def run_flask():
@@ -198,7 +195,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
                     await send_alert(context, f"🚨 *MAJOR LEVEL CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{level}`\n💰 *Price:* `{current_price:.5f}`\n📉 *Dir:* {direction}")
                     LEVEL_ALERT_COOLDOWN[f"SPECIAL_{symbol}_{level}"] = now
 
-        await asyncio.sleep(2) # Rate limit से बचने के लिए
+        await asyncio.sleep(4) # Rate limit से बचने के लिए 4 सेकंड
 
 # =========================================================
 # 7. TELEGRAM COMMANDS
@@ -230,10 +227,12 @@ async def add_major_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ एरर: {str(e)}")
 
 # =========================================================
-# 8. MAIN
+# 8. MAIN EXECUTION
 # =========================================================
-async def run_telegram():
-    global telegram_app
+async def run_telegram_bot():
+    global telegram_app, bot_loop
+    bot_loop = asyncio.get_running_loop()
+    
     telegram_app = (
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
@@ -251,11 +250,12 @@ async def run_telegram():
     await telegram_app.initialize()
     await telegram_app.start()
 
+    # Webhook सेट करें
     webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
     await telegram_app.bot.set_webhook(url=webhook_url)
     logger.info(f"Webhook set to: {webhook_url}")
 
-    # यह लाइन बोट को चालू रखेगी
+    # बोट को चालू रखें
     await asyncio.Event().wait()
 
 def main():
@@ -267,7 +267,10 @@ def main():
     threading.Thread(target=run_flask, daemon=True).start()
 
     # बोट को मुख्य थ्रेड में चलाएँ
-    asyncio.run(run_telegram())
+    try:
+        asyncio.run(run_telegram_bot())
+    except (KeyboardInterrupt, SystemExit):
+        pass
 
 if __name__ == "__main__":
     main()
