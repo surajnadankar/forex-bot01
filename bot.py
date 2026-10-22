@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import yfinance as yf
 from flask import Flask, request
@@ -80,7 +80,7 @@ LEVEL_ALERT_COOLDOWN = {}
 COOLDOWN_SECONDS = 3600
 
 # =========================================================
-# 4. FLASK APP (Webhook Receiver)
+# 4. FLASK APP
 # =========================================================
 flask_app = Flask(__name__)
 telegram_app = None
@@ -125,16 +125,14 @@ def get_live_price_and_range(symbol: str) -> dict:
                 "high": float(recent["High"].max()),
                 "low": float(recent["Low"].min())
             }
-    except Exception as e:
+    except Exception:
         pass
     return None
 
 def get_prev_day_high_low(symbol: str) -> dict:
-    """पिछले दिन (Previous Day) का High और Low निकालेगा"""
     try:
         yf_symbol = TICKER_MAP.get(symbol)
         ticker = yf.Ticker(yf_symbol)
-        # पिछले 5 दिन का डेली डेटा (2nd last candle = Previous Day)
         df = ticker.history(period="5d", interval="1d")
         if len(df) >= 2:
             prev_day = df.iloc[-2]
@@ -142,7 +140,7 @@ def get_prev_day_high_low(symbol: str) -> dict:
                 "pdh": float(prev_day["High"]),
                 "pdl": float(prev_day["Low"])
             }
-    except Exception as e:
+    except Exception:
         pass
     return None
 
@@ -173,13 +171,12 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         recent_high = price_data["high"]
         recent_low = price_data["low"]
         
-        # 🔴 नया: Previous Day High & Low चेक करें
+        # Previous Day High & Low चेक
         prev_day = get_prev_day_high_low(symbol)
         if prev_day:
             pdh = prev_day["pdh"]
             pdl = prev_day["pdl"]
             
-            # PDH चेक
             pdh_key = f"PDH_{symbol}"
             if (recent_high >= pdh) or (abs(current_price - pdh) <= pdh * 0.001):
                 if not is_on_cooldown(pdh_key, now):
@@ -187,7 +184,6 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
                     await send_alert(context, msg)
                     LEVEL_ALERT_COOLDOWN[pdh_key] = now
 
-            # PDL चेक
             pdl_key = f"PDL_{symbol}"
             if (recent_low <= pdl) or (abs(current_price - pdl) <= pdl * 0.001):
                 if not is_on_cooldown(pdl_key, now):
@@ -195,7 +191,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
                     await send_alert(context, msg)
                     LEVEL_ALERT_COOLDOWN[pdl_key] = now
 
-        # 🟢 नॉर्मल लेवल्स चेक
+        # Normal लेवल्स चेक
         if symbol in USER_KEY_LEVELS:
             for level in USER_KEY_LEVELS[symbol]:
                 level_key = f"NORMAL_{symbol}_{level}"
@@ -211,7 +207,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
                     await send_alert(context, msg)
                     LEVEL_ALERT_COOLDOWN[level_key] = now
         
-        # 🚨 मेजर लेवल्स चेक
+        # Major लेवल्स चेक
         if symbol in SPECIAL_LEVELS:
             for level in SPECIAL_LEVELS[symbol]:
                 level_key = f"SPECIAL_{symbol}_{level}"
@@ -236,7 +232,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TELEGRAM_CHAT_ID
     TELEGRAM_CHAT_ID = str(update.effective_chat.id)
     save_chat_id(TELEGRAM_CHAT_ID)
-    await update.message.reply_text("🚀 *Bot Online*\n✅ PDH/PDL Auto-Tracking Active\n✅ Normal & Major Levels Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
+    await update.message.reply_text("🚀 *Bot Online (Webhook)*\n✅ PDH/PDL Auto-Tracking Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
 
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -270,10 +266,11 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN missing!")
         return
 
+    # ❌ पहले updater(None) लिखा था, जो run_webhook के लिए गलत था
+    # ✅ अब updater को हटा दिया है ताकि यह डिफ़ॉल्ट रूप से काम करे
     telegram_app = (
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
-        .updater(None) 
         .read_timeout(30).write_timeout(30).connect_timeout(15).pool_timeout(5)
         .build()
     )
