@@ -91,7 +91,6 @@ def health():
 
 @flask_app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
 def webhook():
-    """Telegram से आए मैसेज को रिसीव करेगा"""
     if telegram_app and bot_loop:
         data = request.get_json(force=True)
         update = Update.de_json(data, telegram_app.bot)
@@ -113,19 +112,24 @@ async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
     except Exception as e:
         logger.warning(f"Failed to send alert: {e}")
 
-def get_live_price_and_range(symbol: str) -> dict:
+def get_precise_price_and_range(symbol: str) -> dict:
+    """Yahoo Finance से सबसे सटीक प्राइस और रेंज निकालेगा"""
     try:
         yf_symbol = TICKER_MAP.get(symbol)
         ticker = yf.Ticker(yf_symbol)
         df = ticker.history(period="1d", interval="1m")
         if not df.empty:
-            recent = df.tail(2)
+            # आखिरी क्लोज प्राइस
+            current = float(df["Close"].iloc[-1])
+            # पिछले 3 मिनट का हाई और लो
+            recent = df.tail(3)
             return {
-                "current": float(recent["Close"].iloc[-1]),
+                "current": current,
                 "high": float(recent["High"].max()),
                 "low": float(recent["Low"].min())
             }
-    except Exception: pass
+    except Exception as e:
+        logger.warning(f"Price fetch error for {symbol}: {e}")
     return None
 
 def get_prev_day_high_low(symbol: str) -> dict:
@@ -146,7 +150,7 @@ def is_on_cooldown(level_key, now):
     return False
 
 # =========================================================
-# 6. LEVEL CHECKING JOB
+# 6. LEVEL CHECKING JOB (Strict & No-Spam)
 # =========================================================
 async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("=== Checking Key Levels ===")
@@ -154,48 +158,75 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
     active_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
     
     for symbol in active_symbols:
-        if symbol not in TICKER_MAP: continue
-        price_data = get_live_price_and_range(symbol)
-        if price_data is None:
-            await asyncio.sleep(2)
+        if symbol not in TICKER_MAP: 
             continue
             
-        current_price, recent_high, recent_low = price_data["current"], price_data["high"], price_data["low"]
+        price_data = get_precise_price_and_range(symbol)
+        if price_data is None:
+            await asyncio.sleep(4)
+            continue
+            
+        current_price = price_data["current"]
         
-        # PDH & PDL
+        closest_level = None
+        closest_diff = float('inf')
+        closest_type = None
+
+        # सख्त टॉलरेंस (Strict Tolerance)
+        # GOLD के लिए 1.5 डॉलर, BTC के लिए 15 डॉलर, और बाकी के लिए 0.01%
+        if symbol in ["XAUUSD", "GOLD"]: tolerance = 1.5
+        elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: tolerance = 15.0
+        elif "JPY" in symbol: tolerance = 0.05
+        else: tolerance = 0.0002
+
+        # 1. PDH & PDL चेक
         prev_day = get_prev_day_high_low(symbol)
         if prev_day:
             pdh, pdl = prev_day["pdh"], prev_day["pdl"]
             
-            if (recent_high >= pdh) or (abs(current_price - pdh) <= pdh * 0.001):
-                if not is_on_cooldown(f"PDH_{symbol}", now):
-                    await send_alert(context, f"🔴 *PREVIOUS DAY HIGH (PDH) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDH Level:* `{pdh:.5f}`\n💰 *Price:* `{current_price:.5f}`")
-                    LEVEL_ALERT_COOLDOWN[f"PDH_{symbol}"] = now
+            if (abs(current_price - pdh) <= tolerance) and not is_on_cooldown(f"PDH_{symbol}", now):
+                closest_level, closest_type = pdh, "PDH"
 
-            if (recent_low <= pdl) or (abs(current_price - pdl) <= pdl * 0.001):
-                if not is_on_cooldown(f"PDL_{symbol}", now):
-                    await send_alert(context, f"🟢 *PREVIOUS DAY LOW (PDL) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDL Level:* `{pdl:.5f}`\n💰 *Price:* `{current_price:.5f}`")
-                    LEVEL_ALERT_COOLDOWN[f"PDL_{symbol}"] = now
+            if (abs(current_price - pdl) <= tolerance) and not is_on_cooldown(f"PDL_{symbol}", now):
+                diff = abs(current_price - pdl)
+                if diff < closest_diff:
+                    closest_level, closest_type = pdl, "PDL"
 
-        # Normal
+        # 2. Normal लेवल्स चेक
         if symbol in USER_KEY_LEVELS:
             for level in USER_KEY_LEVELS[symbol]:
-                is_crossed = ((recent_high >= level) and (current_price >= level * 0.99)) or ((recent_low <= level) and (current_price <= level * 1.01)) or (abs(current_price - level) <= level * 0.001)
-                if is_crossed and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
-                    direction = "⬆️ UP" if current_price >= level else "⬇️ DOWN"
-                    await send_alert(context, f"🟢 *NORMAL LEVEL CROSSED*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{level}`\n💰 *Price:* `{current_price:.5f}`\n📉 *Dir:* {direction}")
-                    LEVEL_ALERT_COOLDOWN[f"NORMAL_{symbol}_{level}"] = now
+                if (abs(current_price - level) <= tolerance) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
+                    diff = abs(current_price - level)
+                    if diff < closest_diff:
+                        closest_diff, closest_level, closest_type = diff, level, "NORMAL"
         
-        # Major
+        # 3. Major लेवल्स चेक
         if symbol in SPECIAL_LEVELS:
             for level in SPECIAL_LEVELS[symbol]:
-                is_crossed = ((recent_high >= level) and (current_price >= level * 0.99)) or ((recent_low <= level) and (current_price <= level * 1.01)) or (abs(current_price - level) <= level * 0.001)
-                if is_crossed and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
-                    direction = "⬆️ UP" if current_price >= level else "⬇️ DOWN"
-                    await send_alert(context, f"🚨 *MAJOR LEVEL CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{level}`\n💰 *Price:* `{current_price:.5f}`\n📉 *Dir:* {direction}")
-                    LEVEL_ALERT_COOLDOWN[f"SPECIAL_{symbol}_{level}"] = now
+                if (abs(current_price - level) <= tolerance) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
+                    diff = abs(current_price - level)
+                    if diff < closest_diff:
+                        closest_diff, closest_level, closest_type = diff, level, "SPECIAL"
 
-        await asyncio.sleep(4) # Rate limit से बचने के लिए 4 सेकंड
+        # अगर कोई लेवल मिला, तो सिर्फ 1 मैसेज भेजें
+        if closest_level is not None:
+            if closest_type == "PDH":
+                msg = f"🔴 *PREVIOUS DAY HIGH (PDH) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDH Level:* `{closest_level:.5f}`\n💰 *Price:* `{current_price:.5f}`"
+            elif closest_type == "PDL":
+                msg = f"🟢 *PREVIOUS DAY LOW (PDL) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDL Level:* `{closest_level:.5f}`\n💰 *Price:* `{current_price:.5f}`"
+            elif closest_type == "NORMAL":
+                msg = f"🟢 *NORMAL LEVEL CROSSED*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{closest_level}`\n💰 *Price:* `{current_price:.5f}`"
+            else:
+                msg = f"🚨 *MAJOR LEVEL CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{closest_level}`\n💰 *Price:* `{current_price:.5f}`"
+            
+            await send_alert(context, msg)
+            
+            if closest_type == "PDH": LEVEL_ALERT_COOLDOWN[f"PDH_{symbol}"] = now
+            elif closest_type == "PDL": LEVEL_ALERT_COOLDOWN[f"PDL_{symbol}"] = now
+            elif closest_type == "NORMAL": LEVEL_ALERT_COOLDOWN[f"NORMAL_{symbol}_{closest_level}"] = now
+            else: LEVEL_ALERT_COOLDOWN[f"SPECIAL_{symbol}_{closest_level}"] = now
+
+        await asyncio.sleep(4) 
 
 # =========================================================
 # 7. TELEGRAM COMMANDS
@@ -250,12 +281,10 @@ async def run_telegram_bot():
     await telegram_app.initialize()
     await telegram_app.start()
 
-    # Webhook सेट करें
     webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
     await telegram_app.bot.set_webhook(url=webhook_url)
     logger.info(f"Webhook set to: {webhook_url}")
 
-    # बोट को चालू रखें
     await asyncio.Event().wait()
 
 def main():
@@ -263,10 +292,8 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN missing!")
         return
 
-    # Flask को अलग थ्रेड में चलाएँ
     threading.Thread(target=run_flask, daemon=True).start()
 
-    # बोट को मुख्य थ्रेड में चलाएँ
     try:
         asyncio.run(run_telegram_bot())
     except (KeyboardInterrupt, SystemExit):
