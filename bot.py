@@ -156,7 +156,7 @@ def is_on_cooldown(level_key, now):
     return False
 
 # =========================================================
-# 6. LEVEL CHECKING JOB (With Buffer & Crossing Logic)
+# 6. LEVEL CHECKING JOB (Strict Logic - No False Alerts)
 # =========================================================
 async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("=== Checking Key Levels ===")
@@ -173,6 +173,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         recent_high = price_data["high"]
         recent_low = price_data["low"]
 
+        # Buffer: लेवल के बिल्कुल करीब आने पर ट्रिगर होगा
         if symbol in ["XAUUSD", "GOLD"]: buffer = 2.0
         elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: buffer = 20.0
         elif "JPY" in symbol: buffer = 0.08
@@ -188,22 +189,24 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         if prev_day:
             pdh, pdl = prev_day["pdh"], prev_day["pdl"]
             
-            if (recent_high >= pdh - buffer or abs(current_price - pdh) <= buffer) and not is_on_cooldown(f"PDH_{symbol}", now):
+            # अगर प्राइस PDH के बहुत करीब है या उसने उसे छुआ है
+            if (abs(current_price - pdh) <= buffer or recent_high >= pdh) and not is_on_cooldown(f"PDH_{symbol}", now):
                 closest_level, closest_type = pdh, "PDH"
                 closest_direction = "UPWARDS"
 
-            if (recent_low <= pdl + buffer or abs(current_price - pdl) <= buffer) and not is_on_cooldown(f"PDL_{symbol}", now):
+            # अगर प्राइस PDL के बहुत करीब है या उसने उसे छुआ है
+            if (abs(current_price - pdl) <= buffer or recent_low <= pdl) and not is_on_cooldown(f"PDL_{symbol}", now):
                 diff = abs(current_price - pdl)
                 if diff < closest_diff:
+                    closest_diff = diff
                     closest_level, closest_type = pdl, "PDL"
                     closest_direction = "DOWNWARDS"
 
         # 2. Normal लेवल्स चेक
         if symbol in USER_KEY_LEVELS:
             for level in USER_KEY_LEVELS[symbol]:
-                is_crossed = (recent_high >= level - buffer) or (recent_low <= level + buffer) or (abs(current_price - level) <= buffer)
-                
-                if is_crossed and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
+                # अगर प्राइस लेवल के करीब है, या उसने उसे छुआ है
+                if (abs(current_price - level) <= buffer or recent_high >= level or recent_low <= level) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
                     diff = abs(current_price - level)
                     if diff < closest_diff:
                         closest_diff = diff
@@ -214,9 +217,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         # 3. Major लेवल्स चेक
         if symbol in SPECIAL_LEVELS:
             for level in SPECIAL_LEVELS[symbol]:
-                is_crossed = (recent_high >= level - buffer) or (recent_low <= level + buffer) or (abs(current_price - level) <= buffer)
-                
-                if is_crossed and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
+                if (abs(current_price - level) <= buffer or recent_high >= level or recent_low <= level) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
                     diff = abs(current_price - level)
                     if diff < closest_diff:
                         closest_diff = diff
@@ -224,7 +225,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
                         closest_type = "SPECIAL"
                         closest_direction = "⬆️ UP" if current_price >= level else "⬇️ DOWN"
 
-        # अगर कोई लेवल मिला, तो सिर्फ 1 मैसेज भेजें
+        # अगर कोई लेवल मिला, तो मैसेज भेजें
         if closest_level is not None:
             if closest_type == "PDH":
                 msg = f"🔴 *PREVIOUS DAY HIGH (PDH) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDH Level:* `{closest_level:.5f}`\n💰 *Price:* `{current_price:.5f}`"
@@ -251,7 +252,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TELEGRAM_CHAT_ID
     TELEGRAM_CHAT_ID = str(update.effective_chat.id)
     save_chat_id(TELEGRAM_CHAT_ID)
-    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ Smart Trigger + Anti-Spam Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
+    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ Strict Logic + Anti-Spam Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
 
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
