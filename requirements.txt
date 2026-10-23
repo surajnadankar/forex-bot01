@@ -1,5 +1,5 @@
-python-telegram-bot[webhooks,job-queue]==21.6
-biquote
+python-telegram-bot==21.6
+yfinance
 pandas
 flask
 requests
