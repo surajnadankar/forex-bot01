@@ -108,11 +108,10 @@ SPECIAL_LEVELS = {
 }
 
 # =========================================================
-# 3. RELIABLE MULTI-FEED TICK ENGINE
+# 3. RELIABLE TICK & PREVIOUS DAY HIGH/LOW ENGINE
 # =========================================================
 def get_live_tick(symbol: str) -> float:
     sym = symbol.upper()
-    
     if sym in ["BTCUSD", "BTC", "ETHUSD", "ETH", "SOLUSD", "SOL"]:
         pair = sym.replace("USD", "") + "USDT"
         try:
@@ -144,6 +143,35 @@ def get_live_tick(symbol: str) -> float:
         pass
 
     return 0.0
+
+def get_prev_day_high_low(symbol: str):
+    """पिछले दिन का High और Low (PDH/PDL) सटीक फेच करता है"""
+    sym = symbol.upper()
+    ticker = TICKER_MAP.get(sym, sym)
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=6)
+        if res.status_code == 200:
+            data = res.json()
+            quote = data["chart"]["result"][0]["indicators"]["quote"][0]
+            highs = [h for h in quote["high"] if h is not None]
+            lows = [l for l in quote["low"] if l is not None]
+            if len(highs) >= 2:
+                # -2 इंडेक्स यानी बीता हुआ कल (Previous Completed Day)
+                return {"pdh": float(highs[-2]), "pdl": float(lows[-2])}
+    except Exception:
+        pass
+
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period="5d", interval="1d")
+        if len(hist) >= 2:
+            return {"pdh": float(hist["High"].iloc[-2]), "pdl": float(hist["Low"].iloc[-2])}
+    except Exception:
+        pass
+
+    return None
 
 # =========================================================
 # 4. FLASK WEB SERVER (PORT 10000)
@@ -185,12 +213,12 @@ def query_gemini(prompt_text: str, image_bytes: bytes = None) -> str:
     return "AI से उत्तर प्राप्त नहीं हुआ।"
 
 # =========================================================
-# 6. बैकग्राउंड लेवल ट्रैकर
+# 6. बैकग्राउंड लेवल ट्रैकर (PDH / PDL + Normal + Major)
 # =========================================================
 def background_price_watcher():
     global LAST_KNOWN_PRICE, LEVEL_ALERT_COOLDOWN, ACTIVE_CHAT_ID
     time.sleep(15)
-    logger.info("=== बैकग्राउंड लेवल ट्रैकर चालू है ===")
+    logger.info("=== बैकग्राउंड लेवल ट्रैकर (PDH/PDL सहित) चालू है ===")
 
     while True:
         try:
@@ -213,6 +241,47 @@ def background_price_watcher():
 
                 now = time.time()
 
+                # --- 1. PREVIOUS DAY HIGH / LOW (PDH / PDL) चेक ---
+                prev_day = get_prev_day_high_low(sym)
+                if prev_day:
+                    pdh = prev_day["pdh"]
+                    pdl = prev_day["pdl"]
+
+                    # PDH बुलिश ब्रेकआउट
+                    alert_key_pdh = f"PDH_{sym}"
+                    if now - LEVEL_ALERT_COOLDOWN.get(alert_key_pdh, 0) >= COOLDOWN_SECONDS:
+                        if old_price < pdh and current_price >= pdh:
+                            msg = (
+                                f"🔴 *[PREVIOUS DAY HIGH (PDH) CROSSED!]*\n\n"
+                                f"📊 *एसेट:* {sym}\n"
+                                f"🎯 *PDH लेवल:* `{pdh}`\n"
+                                f"💰 *लाइव भाव:* `{current_price}`\n"
+                                f"📈 *दिशा:* UPWARDS (बुलिश ब्रेकआउट/लिक्विडिटी स्वीप)"
+                            )
+                            requests.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                                json={"chat_id": target_chat, "text": msg, "parse_mode": "Markdown"},
+                            )
+                            LEVEL_ALERT_COOLDOWN[alert_key_pdh] = now
+
+                    # PDL बेयरिश ब्रेकडाउन
+                    alert_key_pdl = f"PDL_{sym}"
+                    if now - LEVEL_ALERT_COOLDOWN.get(alert_key_pdl, 0) >= COOLDOWN_SECONDS:
+                        if old_price > pdl and current_price <= pdl:
+                            msg = (
+                                f"🟢 *[PREVIOUS DAY LOW (PDL) CROSSED!]*\n\n"
+                                f"📊 *एसेट:* {sym}\n"
+                                f"🎯 *PDL लेवल:* `{pdl}`\n"
+                                f"💰 *लाइव भाव:* `{current_price}`\n"
+                                f"📉 *दिशा:* DOWNWARDS (बेयरिश ब्रेकडाउन/लिक्विडिटी स्वीप)"
+                            )
+                            requests.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                                json={"chat_id": target_chat, "text": msg, "parse_mode": "Markdown"},
+                            )
+                            LEVEL_ALERT_COOLDOWN[alert_key_pdl] = now
+
+                # --- 2. मेजर / स्पेशल लेवल्स चेक ---
                 for lvl in SPECIAL_LEVELS.get(sym, []):
                     alert_key = f"SPECIAL_{sym}_{lvl}"
                     if now - LEVEL_ALERT_COOLDOWN.get(alert_key, 0) < COOLDOWN_SECONDS:
@@ -246,6 +315,7 @@ def background_price_watcher():
                         )
                         LEVEL_ALERT_COOLDOWN[alert_key] = now
 
+                # --- 3. नॉर्मल की-लेवल्स चेक ---
                 for lvl in USER_KEY_LEVELS.get(sym, []):
                     alert_key = f"NORMAL_{sym}_{lvl}"
                     if now - LEVEL_ALERT_COOLDOWN.get(alert_key, 0) < COOLDOWN_SECONDS:
@@ -301,7 +371,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         f"🚀 *सूरज स्नाइपर लेवल ट्रैकर ऑनलाइन!*\n\n"
         f"• आपकी चैट ID लिंक हो गई: `{ACTIVE_CHAT_ID}`\n"
-        f"• सभी लेवल्स (Normal + Major) एक्टिव हैं।\n"
+        f"• PDH (Previous Day High) व PDL (Previous Day Low) ट्रैकिंग सक्रिय है।\n"
+        f"• सभी नॉर्मल और मेजर लेवल्स एक्टिव हैं।\n"
         f"• 2 घंटे का स्मार्ट कूलडाउन एक्टिव है।\n\n"
         f"📌 *कमांड्स:*\n"
         f"• `/levels` : सभी एक्टिव लेवल्स देखें\n"
@@ -315,7 +386,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sync_chat_id(update)
-    lines = ["📡 *एक्टिव मॉनिटर लेवल्स:*\n"]
+    lines = ["📡 *एक्टिव मॉनिटर लेवल्स (PDH/PDL ऑटोमैटिक चालू है):*\n"]
     for sym, lvls in USER_KEY_LEVELS.items():
         majors = SPECIAL_LEVELS.get(sym, [])
         m_txt = f" | ⭐ मेजर: {majors}" if majors else ""
@@ -331,8 +402,16 @@ async def view_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sym = "XAUUSD"
         lvls = USER_KEY_LEVELS.get(sym, [])
         majors = SPECIAL_LEVELS.get(sym, [])
+        prev = get_prev_day_high_low(sym)
+        pdh_txt = f"{prev['pdh']}" if prev else "N/A"
+        pdl_txt = f"{prev['pdl']}" if prev else "N/A"
+
         await update.message.reply_text(
-            f"📊 *{sym} लेवल्स:*\n\n• नॉर्मल: `{lvls}`\n• मेजर: `{majors}`",
+            f"📊 *{sym} लेवल्स:*\n\n"
+            f"• 🌅 Previous Day High (PDH): `{pdh_txt}`\n"
+            f"• 🌄 Previous Day Low (PDL): `{pdl_txt}`\n"
+            f"• 🔹 नॉर्मल की-लेवल्स: `{lvls}`\n"
+            f"• ⭐ मेजर लेवल्स: `{majors}`",
             parse_mode="Markdown",
         )
     except Exception:
