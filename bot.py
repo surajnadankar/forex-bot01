@@ -2,9 +2,8 @@ import os
 import asyncio
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-import pandas as pd
 from biquote import Biquote
 from flask import Flask, request
 
@@ -42,7 +41,7 @@ def save_chat_id(chat_id):
 TELEGRAM_CHAT_ID = load_chat_id()
 
 # =========================================================
-# 2. BIQUOTE CLIENT (No API Key Required)
+# 2. BIQUOTE CLIENT
 # =========================================================
 bq = Biquote()
 
@@ -96,7 +95,7 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # =========================================================
-# 5. HELPER FUNCTIONS (Biquote Based - Accurate Data)
+# 5. HELPER FUNCTIONS
 # =========================================================
 async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
     global TELEGRAM_CHAT_ID
@@ -107,14 +106,10 @@ async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
         logger.warning(f"Failed to send alert: {e}")
 
 def get_precise_price_and_range(symbol: str) -> dict:
-    """Biquote से सटीक लाइव प्राइस और पिछले 3 मिनट का High/Low निकालेगा"""
     try:
-        # 1-मिनट का OHLC डेटा (Biquote सीधे सिंबल नाम लेता है)
         bars = bq.ohlc(symbol, interval="1m", limit=3)
         if bars and len(bars) > 0:
-            # सबसे नया बार (Current Price - mid का इस्तेमाल करें)
             current = float(bars[0]["close"])
-            # पिछले 3 बार का High और Low
             high = max(float(b["high"]) for b in bars)
             low = min(float(b["low"]) for b in bars)
             return {"current": current, "high": high, "low": low}
@@ -123,17 +118,16 @@ def get_precise_price_and_range(symbol: str) -> dict:
     return None
 
 def get_prev_day_high_low(symbol: str) -> dict:
-    """Biquote से पिछले दिन का High/Low निकालेगा"""
+    """सटीक PDH/PDL निकालेगा (TradingView के हिसाब से पिछले 24 घंटे)"""
     try:
-        # डेली कैंडल्स (5 दिन का डेटा)
-        bars = bq.ohlc(symbol, interval="1d", limit=5)
-        if bars and len(bars) >= 2:
-            # [0] आज का, [1] पिछले दिन का
-            prev_day = bars[1] 
-            return {
-                "pdh": float(prev_day["high"]),
-                "pdl": float(prev_day["low"])
-            }
+        # 1-घंटे के कैंडल्स लाएँ (पिछले 30 घंटे का डेटा)
+        bars = bq.ohlc(symbol, interval="1h", limit=30)
+        if bars and len(bars) >= 24:
+            # आखिरी 24 कैंडल्स (पिछले 24 घंटे)
+            last_24h_bars = bars[:24]
+            pdh = max(float(b["high"]) for b in last_24h_bars)
+            pdl = min(float(b["low"]) for b in last_24h_bars)
+            return {"pdh": pdh, "pdl": pdl}
     except Exception as e:
         logger.warning(f"Biquote PDH/PDL error for {symbol}: {e}")
     return None
@@ -145,7 +139,7 @@ def is_on_cooldown(level_key, now):
     return False
 
 # =========================================================
-# 6. LEVEL CHECKING JOB (Strict & No-Spam)
+# 6. LEVEL CHECKING JOB
 # =========================================================
 async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("=== Checking Key Levels (Biquote) ===")
@@ -162,7 +156,6 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         recent_high = price_data["high"]
         recent_low = price_data["low"]
         
-        # सख्त टॉलरेंस
         if symbol in ["XAUUSD", "GOLD"]: tolerance = 1.5
         elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: tolerance = 15.0
         elif "JPY" in symbol: tolerance = 0.05
@@ -228,7 +221,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
             elif closest_type == "NORMAL": LEVEL_ALERT_COOLDOWN[f"NORMAL_{symbol}_{closest_level}"] = now
             else: LEVEL_ALERT_COOLDOWN[f"SPECIAL_{symbol}_{closest_level}"] = now
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(1.5)
 
 # =========================================================
 # 7. TELEGRAM COMMANDS
@@ -237,7 +230,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TELEGRAM_CHAT_ID
     TELEGRAM_CHAT_ID = str(update.effective_chat.id)
     save_chat_id(TELEGRAM_CHAT_ID)
-    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ PDH/PDL Auto-Tracking Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
+    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ PDH/PDL Auto-Tracking Active (24h Logic)\nChat ID सेव हो गई है।", parse_mode="Markdown")
 
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
