@@ -1,16 +1,22 @@
 import os
-import asyncio
+import io
+import re
+import json
+import base64
 import logging
 import threading
-from datetime import datetime, timezone
-
-from biquote import Biquote
+import time
+import requests
+from datetime import datetime, timezone, timedelta
 from flask import Flask, request
+import yfinance as yf
 
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
+    MessageHandler,
+    filters,
     ContextTypes,
 )
 
@@ -24,42 +30,63 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://forex-bot01.onrender.com").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
 
 CHAT_ID_FILE = "chat_id.txt"
 
 def load_chat_id():
     if os.path.exists(CHAT_ID_FILE):
-        with open(CHAT_ID_FILE, "r") as f:
-            return f.read().strip()
-    return os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        try:
+            with open(CHAT_ID_FILE, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return os.getenv("ALLOWED_CHAT_ID", "").strip()
 
-def save_chat_id(chat_id):
-    if chat_id:
-        with open(CHAT_ID_FILE, "w") as f:
-            f.write(str(chat_id))
+def save_chat_id(cid):
+    if cid:
+        try:
+            with open(CHAT_ID_FILE, "w") as f:
+                f.write(str(cid))
+        except Exception as e:
+            logger.warning(f"Chat ID save error: {e}")
 
-TELEGRAM_CHAT_ID = load_chat_id()
+ACTIVE_CHAT_ID = load_chat_id()
 
-# =========================================================
-# 2. BIQUOTE CLIENT & STATE MEMORY
-# =========================================================
-bq = Biquote()
-
-# 🧠 यह हमारी "मेमोरी" है जो हर पेयर का पिछला प्राइस याद रखेगी
+# 🧠 मेमोरी स्टेट
 LAST_KNOWN_PRICE = {}
+LEVEL_ALERT_COOLDOWN = {}
+COOLDOWN_SECONDS = 7200  # 2 घंटे का कूलडाउन (रिपीट स्पैम रोकने के लिए)
 
 # =========================================================
-# 3. KEY LEVELS & SYMBOL MAP
+# 2. SYMBOL MAP & USER LEVELS
 # =========================================================
-SYMBOL_MAP = {
-    "GOLD": "XAUUSD",
-    "SILVER": "XAGUSD",
-    "BTC": "BTCUSD",
-    "ETH": "ETHUSD",
-    "SOL": "SOLUSD"
+TICKER_MAP = {
+    "XAUUSD": "XAUUSD=X",
+    "GOLD": "XAUUSD=X",
+    "SILVER": "XAGUSD=X",
+    "XAGUSD": "XAGUSD=X",
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "USDJPY": "JPY=X",
+    "EURJPY": "EURJPY=X",
+    "GBPJPY": "GBPJPY=X",
+    "AUDUSD": "AUDUSD=X",
+    "USDCAD": "CAD=X",
+    "US30": "^DJI",
+    "NAS100": "^IXIC",
+    "DAX40": "^GDAXI",
+    "UK100": "^FTSE",
+    "BTCUSD": "BTC-USD",
+    "BTC": "BTC-USD",
+    "ETHUSD": "ETH-USD",
+    "ETH": "ETH-USD",
+    "SOLUSD": "SOL-USD",
+    "SOL": "SOL-USD"
 }
 
+# आपके सभी सटीक लेवल्स
 USER_KEY_LEVELS = {
     "XAUUSD": [276.436, 2561.073, 2924.338, 3213.15, 3288.019, 3401.552, 3917.805, 3959.981, 3996.199, 4231.59, 4399.14, 4519.006, 4666.543, 4868.081, 5451.16, 5602.225],
     "EURUSD": [0.5633, 0.82311, 0.96756, 1.01829, 1.07362, 1.10763, 1.1459, 1.17075, 1.18448, 1.19227, 1.20728, 1.22827, 1.4102, 1.51442, 1.6038],
@@ -79,246 +106,368 @@ USER_KEY_LEVELS = {
 }
 
 SPECIAL_LEVELS = {
-    "GOLD": [4030.0, 4062.0],
-    "BTC": [80750.0]
+    "XAUUSD": [4030.0, 4062.0],
+    "BTCUSD": [80750.0]
 }
 
-LEVEL_ALERT_COOLDOWN = {}
-COOLDOWN_SECONDS = 3600
+# =========================================================
+# 3. RELIABLE MULTI-FEED TICK ENGINE
+# =========================================================
+def get_live_tick(symbol: str) -> float:
+    sym = symbol.upper()
+    
+    # 1. क्रिप्टो के लिए डायरेक्ट Binance API (0.01s रिस्पॉन्स, नो 429 ब्लॉक)
+    if sym in ["BTCUSD", "BTC", "ETHUSD", "ETH", "SOLUSD", "SOL"]:
+        pair = sym.replace("USD", "") + "USDT"
+        try:
+            r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={pair}", timeout=5)
+            if r.status_code == 200:
+                return float(r.json()["price"])
+        except Exception:
+            pass
+
+    # 2. फॉरेक्स, मेटल्स और इंडाइसेस के लिए Yahoo Finance Realtime REST
+    ticker = TICKER_MAP.get(sym, sym)
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1m&range=1d"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=6)
+        if res.status_code == 200:
+            data = res.json()
+            meta = data["chart"]["result"][0]["meta"]
+            if "regularMarketPrice" in meta and meta["regularMarketPrice"]:
+                return float(meta["regularMarketPrice"])
+    except Exception:
+        pass
+
+    # 3. फ़ॉलबैक: yfinance fast_info
+    try:
+        t = yf.Ticker(ticker)
+        p = t.fast_info.last_price
+        if p:
+            return float(p)
+    except Exception:
+        pass
+
+    return 0.0
 
 # =========================================================
-# 4. FLASK APP & TELEGRAM APP
+# 4. FLASK WEB SERVER (PORT 10000 - 24/7 ONLINE)
 # =========================================================
 flask_app = Flask(__name__)
-telegram_app = None
-bot_loop = None
 
 @flask_app.route("/")
 @flask_app.route("/health")
 def health():
-    return "Webhook Bot is Online", 200
-
-@flask_app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
-def webhook():
-    if telegram_app and bot_loop:
-        data = request.get_json(force=True)
-        update = Update.de_json(data, telegram_app.bot)
-        asyncio.run_coroutine_threadsafe(telegram_app.update_queue.put(update), bot_loop)
-    return "OK", 200
+    return "Suraj Sniper Multi-Asset Bot Online 200 OK", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # =========================================================
-# 5. HELPER FUNCTIONS
+# 5. GEMINI AI VISION & ADVISORY
 # =========================================================
-async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
-    global TELEGRAM_CHAT_ID
-    if not TELEGRAM_CHAT_ID: return
+def query_gemini(prompt_text: str, image_bytes: bytes = None) -> str:
+    if not GEMINI_API_KEY:
+        return "Gemini API Key मौजूद नहीं है।"
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    parts = [{"text": prompt_text}]
+    if image_bytes:
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": base64.b64encode(image_bytes).decode("utf-8")
+            }
+        })
+
+    payload = {"contents": [{"parts": parts}]}
     try:
-        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
-        await asyncio.sleep(3) # Anti-spam delay (3 seconds)
+        resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+        res_json = resp.json()
+        if "candidates" in res_json and res_json["candidates"]:
+            cand = res_json["candidates"][0]
+            if "content" in cand and "parts" in cand["content"]:
+                return cand["content"]["parts"][0]["text"].strip()
     except Exception as e:
-        logger.warning(f"Failed to send alert: {e}")
-
-def get_correct_symbol(symbol: str) -> str:
-    return SYMBOL_MAP.get(symbol.upper(), symbol.upper())
-
-def get_precise_price(symbol: str) -> float:
-    try:
-        sym = get_correct_symbol(symbol)
-        bars = bq.ohlc(sym, interval="1m", limit=1)
-        if bars and len(bars) > 0:
-            return float(bars[0]["close"])
-    except Exception as e:
-        logger.warning(f"Biquote price error for {symbol}: {e}")
-    return None
-
-def get_prev_day_high_low(symbol: str) -> dict:
-    try:
-        sym = get_correct_symbol(symbol)
-        bars = bq.ohlc(sym, interval="1h", limit=30)
-        if bars and len(bars) >= 24:
-            last_24h_bars = bars[:24]
-            pdh = max(float(b["high"]) for b in last_24h_bars)
-            pdl = min(float(b["low"]) for b in last_24h_bars)
-            return {"pdh": pdh, "pdl": pdl}
-    except Exception as e:
-        logger.warning(f"Biquote PDH/PDL error for {symbol}: {e}")
-    return None
-
-def is_on_cooldown(level_key, now):
-    if level_key in LEVEL_ALERT_COOLDOWN:
-        time_passed = (now - LEVEL_ALERT_COOLDOWN[level_key]).total_seconds()
-        if time_passed < COOLDOWN_SECONDS: return True
-    return False
+        return f"AI विश्लेषण एरर: {e}"
+    return "AI से उत्तर प्राप्त नहीं हुआ।"
 
 # =========================================================
-# 6. LEVEL CHECKING JOB (With State Memory & Anti-Spam)
+# 6. बैकग्राउंड लेवल ट्रैकर (Zero-Spam State Crossing)
 # =========================================================
-async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("=== Checking Key Levels (State Memory Logic) ===")
-    now = datetime.now(timezone.utc)
-    active_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
-    
-    for symbol in active_symbols:
-        current_price = get_precise_price(symbol)
-        if current_price is None:
-            await asyncio.sleep(2)
-            continue
+def background_price_watcher(bot_app):
+    global LAST_KNOWN_PRICE, LEVEL_ALERT_COOLDOWN, ACTIVE_CHAT_ID
+    time.sleep(10)
+    logger.info("=== बैकग्राउंड लेवल ट्रैकर चालू है ===")
 
-        # 🧠 मेमोरी से पिछला प्राइस निकालें
-        old_price = LAST_KNOWN_PRICE.get(symbol)
+    while True:
+        try:
+            target_chat = ACTIVE_CHAT_ID
+            if not target_chat:
+                time.sleep(10)
+                continue
 
-        # अगर यह पहली बार चेक हो रहा है, तो सिर्फ मेमोरी सेव करें
-        if old_price is None:
-            LAST_KNOWN_PRICE[symbol] = current_price
-            continue
+            all_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
 
-        # Buffer (थोड़ी सी छूट ताकि छोटे-मोटे स्प्रेड से मैसेज न आए)
-        if symbol in ["XAUUSD", "GOLD"]: buffer = 0.5
-        elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: buffer = 5.0
-        elif "JPY" in symbol: buffer = 0.02
-        else: buffer = 0.0001
+            for sym in all_symbols:
+                current_price = get_live_tick(sym)
+                if current_price <= 0.0:
+                    continue
 
-        closest_level = None
-        closest_type = None
-        closest_direction = None
+                old_price = LAST_KNOWN_PRICE.get(sym)
+                if old_price is None or old_price <= 0.0:
+                    LAST_KNOWN_PRICE[sym] = current_price
+                    continue
 
-        # 1. PDH & PDL चेक
-        prev_day = get_prev_day_high_low(symbol)
-        if prev_day:
-            pdh, pdl = prev_day["pdh"], prev_day["pdl"]
-            
-            if old_price > pdl and current_price <= (pdl + buffer) and not is_on_cooldown(f"PDL_{symbol}", now):
-                closest_level, closest_type = pdl, "PDL"
-                closest_direction = "DOWNWARDS"
-            
-            elif old_price < pdh and current_price >= (pdh - buffer) and not is_on_cooldown(f"PDH_{symbol}", now):
-                closest_level, closest_type = pdh, "PDH"
-                closest_direction = "UPWARDS"
+                now = time.time()
 
-        # 2. Normal लेवल्स चेक
-        if symbol in USER_KEY_LEVELS:
-            for level in USER_KEY_LEVELS[symbol]:
-                if old_price > level and current_price <= (level + buffer) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
-                    closest_level, closest_type = level, "NORMAL"
-                    closest_direction = "⬇️ DOWN"
-                    break
-                elif old_price < level and current_price >= (level - buffer) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
-                    closest_level, closest_type = level, "NORMAL"
-                    closest_direction = "⬆️ UP"
-                    break
-        
-        # 3. Major लेवल्स चेक
-        if symbol in SPECIAL_LEVELS:
-            for level in SPECIAL_LEVELS[symbol]:
-                if old_price > level and current_price <= (level + buffer) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
-                    closest_level, closest_type = level, "SPECIAL"
-                    closest_direction = "⬇️ DOWN"
-                    break
-                elif old_price < level and current_price >= (level - buffer) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
-                    closest_level, closest_type = level, "SPECIAL"
-                    closest_direction = "⬆️ UP"
-                    break
+                # A. स्पेशल / मेजर लेवल्स चेक
+                for lvl in SPECIAL_LEVELS.get(sym, []):
+                    alert_key = f"SPECIAL_{sym}_{lvl}"
+                    if now - LEVEL_ALERT_COOLDOWN.get(alert_key, 0) < COOLDOWN_SECONDS:
+                        continue
 
-        # मैसेज भेजें (अगर कोई लेवल क्रॉस हुआ है)
-        if closest_level is not None:
-            if closest_type == "PDL":
-                msg = f"🟢 *PREVIOUS DAY LOW (PDL) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDL Level:* `{closest_level:.5f}`\n💰 *Price:* `{current_price:.5f}`"
-            elif closest_type == "PDH":
-                msg = f"🔴 *PREVIOUS DAY HIGH (PDH) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDH Level:* `{closest_level:.5f}`\n💰 *Price:* `{current_price:.5f}`"
-            elif closest_type == "NORMAL":
-                msg = f"🟢 *NORMAL LEVEL CROSSED*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{closest_level}`\n💰 *Price:* `{current_price:.5f}`\n📉 *Dir:* {closest_direction}"
-            else:
-                msg = f"🚨 *MAJOR LEVEL CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{closest_level}`\n💰 *Price:* `{current_price:.5f}`\n📉 *Dir:* {closest_direction}"
-            
-            await send_alert(context, msg)
-            
-            if closest_type == "PDH": LEVEL_ALERT_COOLDOWN[f"PDH_{symbol}"] = now
-            elif closest_type == "PDL": LEVEL_ALERT_COOLDOWN[f"PDL_{symbol}"] = now
-            elif closest_type == "NORMAL": LEVEL_ALERT_COOLDOWN[f"NORMAL_{symbol}_{closest_level}"] = now
-            else: LEVEL_ALERT_COOLDOWN[f"SPECIAL_{symbol}_{closest_level}"] = now
+                    # Bullish Breakout
+                    if old_price < lvl and current_price >= lvl:
+                        msg = (
+                            f"🚨 *[MAJOR LEVEL BULLISH BREAKOUT]*\n\n"
+                            f"• एसेट: *{sym}*\n"
+                            f"• लेवल: `{lvl}` (मेजर स्तर)\n"
+                            f"• लाइव भाव: `{current_price}`\n"
+                            f"• एक्शन: प्राइस ने मेजर लेवल को नीचे से ऊपर तोड़ा है। 15M कैंडल क्लोज देखें।"
+                        )
+                        requests.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={"chat_id": target_chat, "text": msg, "parse_mode": "Markdown"}
+                        )
+                        LEVEL_ALERT_COOLDOWN[alert_key] = now
 
-        # 🧠 नए प्राइस को मेमोरी में सेव करें (अगली बार के लिए)
-        LAST_KNOWN_PRICE[symbol] = current_price
-        await asyncio.sleep(2)
+                    # Bearish Breakdown
+                    elif old_price > lvl and current_price <= lvl:
+                        msg = (
+                            f"🚨 *[MAJOR LEVEL BEARISH BREAKDOWN]*\n\n"
+                            f"• एसेट: *{sym}*\n"
+                            f"• लेवल: `{lvl}` (मेजर स्तर)\n"
+                            f"• लाइव भाव: `{current_price}`\n"
+                            f"• एक्शन: प्राइस ने मेजर लेवल को ऊपर से नीचे तोड़ा है। रीटेस्ट पर सेल देखें।"
+                        )
+                        requests.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={"chat_id": target_chat, "text": msg, "parse_mode": "Markdown"}
+                        )
+                        LEVEL_ALERT_COOLDOWN[alert_key] = now
+
+                # B. नॉर्मल की-लेवल्स चेक
+                for lvl in USER_KEY_LEVELS.get(sym, []):
+                    alert_key = f"NORMAL_{sym}_{lvl}"
+                    if now - LEVEL_ALERT_COOLDOWN.get(alert_key, 0) < COOLDOWN_SECONDS:
+                        continue
+
+                    # Bullish Breakout
+                    if old_price < lvl and current_price >= lvl:
+                        msg = (
+                            f"🟢 *[KEY LEVEL BULLISH CROSS]*\n\n"
+                            f"• एसेट: *{sym}*\n"
+                            f"• लेवल: `{lvl}`\n"
+                            f"• लाइव भाव: `{current_price}`\n"
+                            f"• स्थिति: नीचे से ऊपर क्रॉसिंग हुई।"
+                        )
+                        requests.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={"chat_id": target_chat, "text": msg, "parse_mode": "Markdown"}
+                        )
+                        LEVEL_ALERT_COOLDOWN[alert_key] = now
+
+                    # Bearish Breakdown
+                    elif old_price > lvl and current_price <= lvl:
+                        msg = (
+                            f"🔴 *[KEY LEVEL BEARISH CROSS]*\n\n"
+                            f"• एसेट: *{sym}*\n"
+                            f"• लेवल: `{lvl}`\n"
+                            f"• लाइव भाव: `{current_price}`\n"
+                            f"• स्थिति: ऊपर से नीचे क्रॉसिंग हुई।"
+                        )
+                        requests.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={"chat_id": target_chat, "text": msg, "parse_mode": "Markdown"}
+                        )
+                        LEVEL_ALERT_COOLDOWN[alert_key] = now
+
+                LAST_KNOWN_PRICE[sym] = current_price
+                time.sleep(1)
+
+        except Exception as e:
+            logger.error(f"वॉचर लूप एरर: {e}")
+
+        time.sleep(15)
 
 # =========================================================
-# 7. TELEGRAM COMMANDS
+# 7. टेलीग्राम कमांड्स और मैसेज हैंडलर
 # =========================================================
+def sync_chat_id(update: Update):
+    global ACTIVE_CHAT_ID
+    if update.effective_chat:
+        ACTIVE_CHAT_ID = str(update.effective_chat.id)
+        save_chat_id(ACTIVE_CHAT_ID)
+
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global TELEGRAM_CHAT_ID
-    TELEGRAM_CHAT_ID = str(update.effective_chat.id)
-    save_chat_id(TELEGRAM_CHAT_ID)
-    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ State Memory Logic Active (क्रॉसिंग सटीक पकड़ेगा)\nChat ID सेव हो गई है।", parse_mode="Markdown")
+    sync_chat_id(update)
+    msg = (
+        f"🚀 *सूरज स्नाइपर लेवल ट्रैकर ऑनलाइन!*\n\n"
+        f"• आपकी चैट ID लिंक हो गई: `{ACTIVE_CHAT_ID}`\n"
+        f"• सभी लेवल्स (Normal + Major) एक्टिव हैं।\n"
+        f"• 2 घंटे का स्मार्ट कूलडाउन एक्टिव है (कोई स्पैम नहीं होगा)।\n\n"
+        f"📌 *कमांड्स:*\n"
+        f"• `/levels` : सभी एक्टिव लेवल्स देखें\n"
+        f"• `/addlevel XAUUSD 4150.5` : नॉर्मल लेवल जोड़ें\n"
+        f"• `/addmajor XAUUSD 4200.0` : मेजर लेवल जोड़ें\n"
+        f"• `/clearlevels XAUUSD` : किसी पेयर के लेवल्स खाली करें\n"
+        f"• किसी भी चार्ट की फोटो भेजें, जेमिनी पूरा एक्शन प्लान देगी।"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sync_chat_id(update)
+    lines = ["📡 *एक्टिव मॉनिटर लेवल्स:*\n"]
+    for sym, lvls in USER_KEY_LEVELS.items():
+        majors = SPECIAL_LEVELS.get(sym, [])
+        m_txt = f" | ⭐ मेजर: {majors}" if majors else ""
+        lines.append(f"🔹 *{sym}* (कुल {len(lvls)} लेवल्स){m_txt}")
+    lines.append("\n_किसी पेयर के पूरे लेवल्स देखने के लिए `/viewlevels XAUUSD` लिखें।_")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def view_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sync_chat_id(update)
+    try:
+        sym = context.args[0].upper()
+        if sym in ["GOLD"]: sym = "XAUUSD"
+        lvls = USER_KEY_LEVELS.get(sym, [])
+        majors = SPECIAL_LEVELS.get(sym, [])
+        await update.message.reply_text(
+            f"📊 *{sym} लेवल्स:*\n\n"
+            f"• नॉर्मल: `{lvls}`\n"
+            f"• मेजर: `{majors}`",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        await update.message.reply_text("उपयोग: `/viewlevels XAUUSD`", parse_mode="Markdown")
 
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sync_chat_id(update)
     try:
         args = context.args
-        symbol = args[0].upper()
-        price = float(args[1])
-        if symbol == "GOLD": symbol = "XAUUSD"
-        if symbol not in USER_KEY_LEVELS: USER_KEY_LEVELS[symbol] = []
-        USER_KEY_LEVELS[symbol].append(price)
-        await update.message.reply_text(f"✅ *{symbol}* में लेवल जुड़ गया: `{price}`", parse_mode="Markdown")
+        sym = re.sub(r'[^A-Z0-9]', '', args[0].upper())
+        if sym in ["GOLD"]: sym = "XAUUSD"
+        raw_text = "".join(args[1:])
+        new_lvls = [float(x.strip()) for x in raw_text.split(",") if x.strip()]
+        
+        current = USER_KEY_LEVELS.get(sym, [])
+        combined = sorted(list(set(current + new_lvls)))
+        USER_KEY_LEVELS[sym] = combined
+        await update.message.reply_text(f"✅ *{sym}* में लेवल्स जुड़ गए (कुल {len(combined)}):\n`{new_lvls}`", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"❌ एरर: {str(e)}")
+        await update.message.reply_text(f"एरर: {e}")
 
 async def add_major_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sync_chat_id(update)
     try:
         args = context.args
-        symbol = args[0].upper()
-        price = float(args[1])
-        if symbol == "GOLD": symbol = "XAUUSD"
-        if symbol not in SPECIAL_LEVELS: SPECIAL_LEVELS[symbol] = []
-        SPECIAL_LEVELS[symbol].append(price)
-        await update.message.reply_text(f"🚨 *{symbol}* में मेजर लेवल जुड़ गया: `{price}`", parse_mode="Markdown")
+        sym = re.sub(r'[^A-Z0-9]', '', args[0].upper())
+        if sym in ["GOLD"]: sym = "XAUUSD"
+        raw_text = "".join(args[1:])
+        new_lvls = [float(x.strip()) for x in raw_text.split(",") if x.strip()]
+        
+        current = SPECIAL_LEVELS.get(sym, [])
+        combined = sorted(list(set(current + new_lvls)))
+        SPECIAL_LEVELS[sym] = combined
+        await update.message.reply_text(f"🚨 *{sym}* में ⭐ **मेजर लेवल्स** जुड़ गए:\n`{combined}`", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"❌ एरर: {str(e)}")
+        await update.message.reply_text(f"एरर: {e}")
+
+async def clear_levels_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sync_chat_id(update)
+    try:
+        sym = re.sub(r'[^A-Z0-9]', '', context.args[0].upper())
+        if sym in ["GOLD"]: sym = "XAUUSD"
+        USER_KEY_LEVELS[sym] = []
+        SPECIAL_LEVELS[sym] = []
+        await update.message.reply_text(f"🗑️ *{sym}* के सभी लेवल्स क्लियर कर दिए गए हैं।", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"एरर: {e}")
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sync_chat_id(update)
+    await update.message.reply_text("👁️ चार्ट स्कैन हो रहा है, जेमिनी एक्शन प्लान बना रही है...")
+    try:
+        photo_file = await update.message.photo[-1].get_file()
+        image_bytes = await photo_file.download_as_bytearray()
+        caption = update.message.caption or ""
+
+        prompt = f"""
+आप $2,500 The5ers हाई स्टेक्स खाते के संस्थागत रिस्क मैनेजर हैं।
+इस ट्रेडिंग चार्ट का विश्लेषण करें: {caption}
+
+नियम:
+1. चार्ट के दाहिने प्राइस स्केल पर जो लाइव भाव दिख रहा है, उसी को आधार मानें।
+2. The5ers $2,500 अकाउंट: फिक्स रिस्क $25 (1%)।
+3. मैक्सिमम स्टॉप लॉस 40 पिप्स (गोल्ड में $1 = 10 पिप्स, यानी अधिकतम $4 का SL)।
+4. 2-ट्रिगर ऑर्डर: 1:1 RRR पर 50% लॉट बुक + SL कॉस्ट पर, और 1:3 RRR मुख्य रनर।
+5. केवल अवॉइड न कहें, बुलिश और बेयरिश दोनों तरफ का एक्शन प्लान दें।
+
+इस फॉर्मेट में हिंदी में उत्तर दें:
+🎯 **मार्केट स्ट्रक्चर:** [सपोर्ट/रेजिस्टेंस व ट्रेंड]
+📊 **पहचाना गया भाव:** [Live Price from Scale]
+
+🟢 **बुलिश प्लान (ऊपर जाने पर):**
+• ट्रिगर: [लेवल]
+• बाय एंट्री: [भाव]
+• स्टॉप लॉस: [भाव] (मैक्स 40 पिप्स)
+• टारगेट 1 (1:1 RRR): [भाव] (50% बुक + SL कॉस्ट पर)
+• टारगेट 2 (1:3 RRR): [भाव]
+
+🔴 **बेयरिश प्लान (नीचे गिरने पर):**
+• ट्रिगर: [लेवल]
+• सेल एंट्री: [भाव]
+• स्टॉप लॉस: [भाव] (मैक्स 40 पिप्स)
+• टारगेट 1 (1:1 RRR): [भाव] (50% बुक + SL कॉस्ट पर)
+• टारगेट 2 (1:3 RRR): [भाव]
+
+💡 **मास्टर फैसला:** [करेंट भाव पर तुरंत क्या करना है]
+"""
+        res = query_gemini(prompt, bytes(image_bytes))
+        await update.message.reply_text(res)
+    except Exception as e:
+        await update.message.reply_text(f"इमेज स्कैन एरर: {e}")
 
 # =========================================================
-# 8. MAIN EXECUTION
+# 8. मुख्य फ़ंक्शन
 # =========================================================
-async def run_telegram_bot():
-    global telegram_app, bot_loop
-    bot_loop = asyncio.get_running_loop()
-    
-    telegram_app = (
-        ApplicationBuilder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .read_timeout(30).write_timeout(30).connect_timeout(15).pool_timeout(5)
-        .build()
-    )
-
-    telegram_app.add_handler(CommandHandler("start", start_cmd))
-    telegram_app.add_handler(CommandHandler(["addlevel", "addleve"], add_normal_level_cmd))
-    telegram_app.add_handler(CommandHandler("addmajor", add_major_level_cmd))
-    
-    if telegram_app.job_queue:
-        telegram_app.job_queue.run_repeating(check_key_levels_job, interval=2 * 60, first=10)
-
-    await telegram_app.initialize()
-    await telegram_app.start()
-
-    webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
-    await telegram_app.bot.set_webhook(url=webhook_url)
-    logger.info(f"Webhook set to: {webhook_url}")
-
-    await asyncio.Event().wait()
-
 def main():
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN missing!")
-        return
-
+    # 1. वेब सर्वर स्टार्ट (Render Port 10000)
     threading.Thread(target=run_flask, daemon=True).start()
 
-    try:
-        asyncio.run(run_telegram_bot())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN नहीं मिला!")
+        return
+
+    # 2. टेलीग्राम ऐप (अटूट Polling इंजन - वेबहुक हैंग नहीं होगा)
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("levels", levels_cmd))
+    app.add_handler(CommandHandler("viewlevels", view_levels_cmd))
+    app.add_handler(CommandHandler(["addlevel", "addlevels"], add_normal_level_cmd))
+    app.add_handler(CommandHandler(["addmajor", "addmajorlevel"], add_major_level_cmd))
+    app.add_handler(CommandHandler("clearlevels", clear_levels_cmd))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    # 3. बैकग्राउंड लेवल ट्रैकर थ्रेड स्टार्ट
+    threading.Thread(target=background_price_watcher, args=(app,), daemon=True).start()
+
+    logger.info("=== सूरज स्नाइपर बॉट पूरी तरह तैयार है ===")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
