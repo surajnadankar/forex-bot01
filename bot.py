@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from biquote import Biquote
 from flask import Flask, request
@@ -35,8 +35,9 @@ def load_chat_id():
     return os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 def save_chat_id(chat_id):
-    with open(CHAT_ID_FILE, "w") as f:
-        f.write(str(chat_id))
+    if chat_id:
+        with open(CHAT_ID_FILE, "w") as f:
+            f.write(str(chat_id))
 
 TELEGRAM_CHAT_ID = load_chat_id()
 
@@ -46,8 +47,17 @@ TELEGRAM_CHAT_ID = load_chat_id()
 bq = Biquote()
 
 # =========================================================
-# 3. KEY LEVELS
+# 3. KEY LEVELS & SYMBOL MAP
 # =========================================================
+# Biquote के लिए सिंबल मैप
+SYMBOL_MAP = {
+    "GOLD": "XAUUSD",
+    "SILVER": "XAGUSD",
+    "BTC": "BTCUSD",
+    "ETH": "ETHUSD",
+    "SOL": "SOLUSD"
+}
+
 USER_KEY_LEVELS = {
     "XAUUSD": [276.436, 2561.073, 2924.338, 3213.15, 3288.019, 3401.552, 3917.805, 3959.981, 3996.199, 4231.59, 4399.14, 4519.006, 4666.543, 4868.081, 5451.16, 5602.225],
     "EURUSD": [0.5633, 0.82311, 0.96756, 1.01829, 1.07362, 1.10763, 1.1459, 1.17075, 1.18448, 1.19227, 1.20728, 1.22827, 1.4102, 1.51442, 1.6038],
@@ -66,7 +76,11 @@ USER_KEY_LEVELS = {
     "SOLUSD": [73.39, 122.76, 182.99, 209.65, 253.09]
 }
 
-SPECIAL_LEVELS = {}
+SPECIAL_LEVELS = {
+    "GOLD": [4030.0, 4062.0],
+    "BTC": [80750.0]
+}
+
 LEVEL_ALERT_COOLDOWN = {}
 COOLDOWN_SECONDS = 3600
 
@@ -105,9 +119,13 @@ async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
     except Exception as e:
         logger.warning(f"Failed to send alert: {e}")
 
+def get_correct_symbol(symbol: str) -> str:
+    return SYMBOL_MAP.get(symbol.upper(), symbol.upper())
+
 def get_precise_price_and_range(symbol: str) -> dict:
     try:
-        bars = bq.ohlc(symbol, interval="1m", limit=3)
+        sym = get_correct_symbol(symbol)
+        bars = bq.ohlc(sym, interval="1m", limit=3)
         if bars and len(bars) > 0:
             current = float(bars[0]["close"])
             high = max(float(b["high"]) for b in bars)
@@ -118,12 +136,10 @@ def get_precise_price_and_range(symbol: str) -> dict:
     return None
 
 def get_prev_day_high_low(symbol: str) -> dict:
-    """सटीक PDH/PDL निकालेगा (TradingView के हिसाब से पिछले 24 घंटे)"""
     try:
-        # 1-घंटे के कैंडल्स लाएँ (पिछले 30 घंटे का डेटा)
-        bars = bq.ohlc(symbol, interval="1h", limit=30)
+        sym = get_correct_symbol(symbol)
+        bars = bq.ohlc(sym, interval="1h", limit=30)
         if bars and len(bars) >= 24:
-            # आखिरी 24 कैंडल्स (पिछले 24 घंटे)
             last_24h_bars = bars[:24]
             pdh = max(float(b["high"]) for b in last_24h_bars)
             pdl = min(float(b["low"]) for b in last_24h_bars)
@@ -139,10 +155,10 @@ def is_on_cooldown(level_key, now):
     return False
 
 # =========================================================
-# 6. LEVEL CHECKING JOB
+# 6. LEVEL CHECKING JOB (With Buffer & Crossing Logic)
 # =========================================================
 async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("=== Checking Key Levels (Biquote) ===")
+    logger.info("=== Checking Key Levels ===")
     now = datetime.now(timezone.utc)
     active_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
     
@@ -155,11 +171,17 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         current_price = price_data["current"]
         recent_high = price_data["high"]
         recent_low = price_data["low"]
-        
-        if symbol in ["XAUUSD", "GOLD"]: tolerance = 1.5
-        elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: tolerance = 15.0
-        elif "JPY" in symbol: tolerance = 0.05
-        else: tolerance = 0.0002
+
+        # 🎯 बफर सेटिंग (Buffer Setting)
+        # ताकि ब्रोकर और TradingView के प्राइस में फर्क होने पर भी अलर्ट मिस न हो
+        if symbol in ["XAUUSD", "GOLD"]: 
+            buffer = 2.0  # गोल्ड के लिए 2 डॉलर का बफर
+        elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: 
+            buffer = 20.0 # इंडेक्स और BTC के लिए
+        elif "JPY" in symbol: 
+            buffer = 0.08 # JPY के लिए
+        else: 
+            buffer = 0.0003 # फॉरेक्स के लिए
 
         closest_level = None
         closest_diff = float('inf')
@@ -171,11 +193,11 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         if prev_day:
             pdh, pdl = prev_day["pdh"], prev_day["pdl"]
             
-            if (abs(current_price - pdh) <= tolerance) and not is_on_cooldown(f"PDH_{symbol}", now):
+            if (recent_high >= pdh - buffer or abs(current_price - pdh) <= buffer) and not is_on_cooldown(f"PDH_{symbol}", now):
                 closest_level, closest_type = pdh, "PDH"
                 closest_direction = "UPWARDS"
 
-            if (abs(current_price - pdl) <= tolerance) and not is_on_cooldown(f"PDL_{symbol}", now):
+            if (recent_low <= pdl + buffer or abs(current_price - pdl) <= buffer) and not is_on_cooldown(f"PDL_{symbol}", now):
                 diff = abs(current_price - pdl)
                 if diff < closest_diff:
                     closest_level, closest_type = pdl, "PDL"
@@ -184,7 +206,9 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         # 2. Normal लेवल्स चेक
         if symbol in USER_KEY_LEVELS:
             for level in USER_KEY_LEVELS[symbol]:
-                if (abs(current_price - level) <= tolerance) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
+                is_crossed = (recent_high >= level - buffer) or (recent_low <= level + buffer) or (abs(current_price - level) <= buffer)
+                
+                if is_crossed and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
                     diff = abs(current_price - level)
                     if diff < closest_diff:
                         closest_diff = diff
@@ -195,7 +219,9 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         # 3. Major लेवल्स चेक
         if symbol in SPECIAL_LEVELS:
             for level in SPECIAL_LEVELS[symbol]:
-                if (abs(current_price - level) <= tolerance) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
+                is_crossed = (recent_high >= level - buffer) or (recent_low <= level + buffer) or (abs(current_price - level) <= buffer)
+                
+                if is_crossed and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
                     diff = abs(current_price - level)
                     if diff < closest_diff:
                         closest_diff = diff
@@ -230,12 +256,16 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TELEGRAM_CHAT_ID
     TELEGRAM_CHAT_ID = str(update.effective_chat.id)
     save_chat_id(TELEGRAM_CHAT_ID)
-    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ PDH/PDL Auto-Tracking Active (24h Logic)\nChat ID सेव हो गई है।", parse_mode="Markdown")
+    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ Smart Trigger Logic + Buffer Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
 
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
-        symbol, price = args[0].upper(), float(args[1])
+        symbol = args[0].upper()
+        price = float(args[1])
+        
+        if symbol == "GOLD": symbol = "XAUUSD"
+        
         if symbol not in USER_KEY_LEVELS: USER_KEY_LEVELS[symbol] = []
         USER_KEY_LEVELS[symbol].append(price)
         await update.message.reply_text(f"✅ *{symbol}* में लेवल जुड़ गया: `{price}`", parse_mode="Markdown")
@@ -245,7 +275,11 @@ async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYP
 async def add_major_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
-        symbol, price = args[0].upper(), float(args[1])
+        symbol = args[0].upper()
+        price = float(args[1])
+        
+        if symbol == "GOLD": symbol = "XAUUSD"
+        
         if symbol not in SPECIAL_LEVELS: SPECIAL_LEVELS[symbol] = []
         SPECIAL_LEVELS[symbol].append(price)
         await update.message.reply_text(f"🚨 *{symbol}* में मेजर लेवल जुड़ गया: `{price}`", parse_mode="Markdown")
