@@ -6,6 +6,7 @@ import base64
 import logging
 import threading
 import time
+import asyncio
 import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask
@@ -145,7 +146,6 @@ def get_live_tick(symbol: str) -> float:
     return 0.0
 
 def get_prev_day_high_low(symbol: str):
-    """पिछले दिन का High और Low (PDH/PDL) सटीक फेच करता है"""
     sym = symbol.upper()
     ticker = TICKER_MAP.get(sym, sym)
     try:
@@ -158,7 +158,6 @@ def get_prev_day_high_low(symbol: str):
             highs = [h for h in quote["high"] if h is not None]
             lows = [l for l in quote["low"] if l is not None]
             if len(highs) >= 2:
-                # -2 इंडेक्स यानी बीता हुआ कल (Previous Completed Day)
                 return {"pdh": float(highs[-2]), "pdl": float(lows[-2])}
     except Exception:
         pass
@@ -218,7 +217,7 @@ def query_gemini(prompt_text: str, image_bytes: bytes = None) -> str:
 def background_price_watcher():
     global LAST_KNOWN_PRICE, LEVEL_ALERT_COOLDOWN, ACTIVE_CHAT_ID
     time.sleep(15)
-    logger.info("=== बैकग्राउंड लेवल ट्रैकर (PDH/PDL सहित) चालू है ===")
+    logger.info("=== बैकग्राउंड लेवल ट्रैकर चालू है ===")
 
     while True:
         try:
@@ -241,13 +240,12 @@ def background_price_watcher():
 
                 now = time.time()
 
-                # --- 1. PREVIOUS DAY HIGH / LOW (PDH / PDL) चेक ---
+                # --- 1. PDH / PDL चेक ---
                 prev_day = get_prev_day_high_low(sym)
                 if prev_day:
                     pdh = prev_day["pdh"]
                     pdl = prev_day["pdl"]
 
-                    # PDH बुलिश ब्रेकआउट
                     alert_key_pdh = f"PDH_{sym}"
                     if now - LEVEL_ALERT_COOLDOWN.get(alert_key_pdh, 0) >= COOLDOWN_SECONDS:
                         if old_price < pdh and current_price >= pdh:
@@ -256,7 +254,7 @@ def background_price_watcher():
                                 f"📊 *एसेट:* {sym}\n"
                                 f"🎯 *PDH लेवल:* `{pdh}`\n"
                                 f"💰 *लाइव भाव:* `{current_price}`\n"
-                                f"📈 *दिशा:* UPWARDS (बुलिश ब्रेकआउट/लिक्विडिटी स्वीप)"
+                                f"📈 *दिशा:* UPWARDS (बुलिश ब्रेकआउट)"
                             )
                             requests.post(
                                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -264,7 +262,6 @@ def background_price_watcher():
                             )
                             LEVEL_ALERT_COOLDOWN[alert_key_pdh] = now
 
-                    # PDL बेयरिश ब्रेकडाउन
                     alert_key_pdl = f"PDL_{sym}"
                     if now - LEVEL_ALERT_COOLDOWN.get(alert_key_pdl, 0) >= COOLDOWN_SECONDS:
                         if old_price > pdl and current_price <= pdl:
@@ -273,7 +270,7 @@ def background_price_watcher():
                                 f"📊 *एसेट:* {sym}\n"
                                 f"🎯 *PDL लेवल:* `{pdl}`\n"
                                 f"💰 *लाइव भाव:* `{current_price}`\n"
-                                f"📉 *दिशा:* DOWNWARDS (बेयरिश ब्रेकडाउन/लिक्विडिटी स्वीप)"
+                                f"📉 *दिशा:* DOWNWARDS (बेयरिश ब्रेकडाउन)"
                             )
                             requests.post(
                                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -281,7 +278,7 @@ def background_price_watcher():
                             )
                             LEVEL_ALERT_COOLDOWN[alert_key_pdl] = now
 
-                # --- 2. मेजर / स्पेशल लेवल्स चेक ---
+                # --- 2. मेजर लेवल्स चेक ---
                 for lvl in SPECIAL_LEVELS.get(sym, []):
                     alert_key = f"SPECIAL_{sym}_{lvl}"
                     if now - LEVEL_ALERT_COOLDOWN.get(alert_key, 0) < COOLDOWN_SECONDS:
@@ -371,7 +368,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         f"🚀 *सूरज स्नाइपर लेवल ट्रैकर ऑनलाइन!*\n\n"
         f"• आपकी चैट ID लिंक हो गई: `{ACTIVE_CHAT_ID}`\n"
-        f"• PDH (Previous Day High) व PDL (Previous Day Low) ट्रैकिंग सक्रिय है।\n"
+        f"• PDH व PDL ट्रैकिंग सक्रिय है।\n"
         f"• सभी नॉर्मल और मेजर लेवल्स एक्टिव हैं।\n"
         f"• 2 घंटे का स्मार्ट कूलडाउन एक्टिव है।\n\n"
         f"📌 *कमांड्स:*\n"
@@ -495,12 +492,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"इमेज स्कैन एरर: {e}")
 
 # =========================================================
-# 8. TELEGRAM BOT THREAD RUNNER
+# 8. TELEGRAM BOT THREAD RUNNER (Loop Fix)
 # =========================================================
 def run_telegram_polling():
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN नहीं मिला!")
         return
+
+    # थ्रेड के अंदर नया Event Loop सेट करना (RuntimeError फिक्स)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
@@ -512,7 +513,7 @@ def run_telegram_polling():
     app.add_handler(CommandHandler("clearlevels", clear_levels_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    logger.info("=== Telegram Polling चालू हो रहा है ===")
+    logger.info("=== Telegram Polling इंजन सफलता से चालू हो गया है ===")
     app.run_polling(drop_pending_updates=True)
 
 # =========================================================
