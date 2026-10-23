@@ -4,7 +4,8 @@ import logging
 import threading
 from datetime import datetime, timezone
 
-import yfinance as yf
+import pandas as pd
+from biquote import Biquote
 from flask import Flask, request
 
 from telegram import Update
@@ -41,16 +42,9 @@ def save_chat_id(chat_id):
 TELEGRAM_CHAT_ID = load_chat_id()
 
 # =========================================================
-# 2. TICKER MAP
+# 2. BIQUOTE CLIENT (No API Key Required)
 # =========================================================
-TICKER_MAP = {
-    "XAUUSD": "GC=F", "GOLD": "GC=F", "XAGUSD": "SI=F", "SILVER": "SI=F",
-    "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "USDJPY=X", "EURJPY": "EURJPY=X",
-    "GBPJPY": "GBPJPY=X", "AUDUSD": "AUDUSD=X", "USDCAD": "USDCAD=X", "US30": "^DJI",
-    "NAS100": "^IXIC", "DAX40": "^GDAXI", "UK100": "^FTSE", "XTIUSD": "CL=F",
-    "BTCUSD": "BTC-USD", "BTC": "BTC-USD", "ETHUSD": "ETH-USD", "ETH": "ETH-USD",
-    "SOLUSD": "SOL-USD", "SOL": "SOL-USD",
-}
+bq = Biquote()
 
 # =========================================================
 # 3. KEY LEVELS
@@ -102,7 +96,7 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # =========================================================
-# 5. HELPER FUNCTIONS
+# 5. HELPER FUNCTIONS (Biquote Based - Accurate Data)
 # =========================================================
 async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
     global TELEGRAM_CHAT_ID
@@ -113,34 +107,35 @@ async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
         logger.warning(f"Failed to send alert: {e}")
 
 def get_precise_price_and_range(symbol: str) -> dict:
-    """Yahoo Finance से सबसे सटीक प्राइस और रेंज निकालेगा"""
+    """Biquote से सटीक लाइव प्राइस और पिछले 3 मिनट का High/Low निकालेगा"""
     try:
-        yf_symbol = TICKER_MAP.get(symbol)
-        ticker = yf.Ticker(yf_symbol)
-        df = ticker.history(period="1d", interval="1m")
-        if not df.empty:
-            # आखिरी क्लोज प्राइस
-            current = float(df["Close"].iloc[-1])
-            # पिछले 3 मिनट का हाई और लो
-            recent = df.tail(3)
-            return {
-                "current": current,
-                "high": float(recent["High"].max()),
-                "low": float(recent["Low"].min())
-            }
+        # 1-मिनट का OHLC डेटा (Biquote सीधे सिंबल नाम लेता है)
+        bars = bq.ohlc(symbol, interval="1m", limit=3)
+        if bars and len(bars) > 0:
+            # सबसे नया बार (Current Price - mid का इस्तेमाल करें)
+            current = float(bars[0]["close"])
+            # पिछले 3 बार का High और Low
+            high = max(float(b["high"]) for b in bars)
+            low = min(float(b["low"]) for b in bars)
+            return {"current": current, "high": high, "low": low}
     except Exception as e:
-        logger.warning(f"Price fetch error for {symbol}: {e}")
+        logger.warning(f"Biquote price error for {symbol}: {e}")
     return None
 
 def get_prev_day_high_low(symbol: str) -> dict:
+    """Biquote से पिछले दिन का High/Low निकालेगा"""
     try:
-        yf_symbol = TICKER_MAP.get(symbol)
-        ticker = yf.Ticker(yf_symbol)
-        df = ticker.history(period="5d", interval="1d")
-        if len(df) >= 2:
-            prev_day = df.iloc[-2]
-            return {"pdh": float(prev_day["High"]), "pdl": float(prev_day["Low"])}
-    except Exception: pass
+        # डेली कैंडल्स (5 दिन का डेटा)
+        bars = bq.ohlc(symbol, interval="1d", limit=5)
+        if bars and len(bars) >= 2:
+            # [0] आज का, [1] पिछले दिन का
+            prev_day = bars[1] 
+            return {
+                "pdh": float(prev_day["high"]),
+                "pdl": float(prev_day["low"])
+            }
+    except Exception as e:
+        logger.warning(f"Biquote PDH/PDL error for {symbol}: {e}")
     return None
 
 def is_on_cooldown(level_key, now):
@@ -153,31 +148,30 @@ def is_on_cooldown(level_key, now):
 # 6. LEVEL CHECKING JOB (Strict & No-Spam)
 # =========================================================
 async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("=== Checking Key Levels ===")
+    logger.info("=== Checking Key Levels (Biquote) ===")
     now = datetime.now(timezone.utc)
     active_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
     
     for symbol in active_symbols:
-        if symbol not in TICKER_MAP: 
-            continue
-            
         price_data = get_precise_price_and_range(symbol)
         if price_data is None:
-            await asyncio.sleep(4)
+            await asyncio.sleep(2)
             continue
             
         current_price = price_data["current"]
+        recent_high = price_data["high"]
+        recent_low = price_data["low"]
         
-        closest_level = None
-        closest_diff = float('inf')
-        closest_type = None
-
-        # सख्त टॉलरेंस (Strict Tolerance)
-        # GOLD के लिए 1.5 डॉलर, BTC के लिए 15 डॉलर, और बाकी के लिए 0.01%
+        # सख्त टॉलरेंस
         if symbol in ["XAUUSD", "GOLD"]: tolerance = 1.5
         elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: tolerance = 15.0
         elif "JPY" in symbol: tolerance = 0.05
         else: tolerance = 0.0002
+
+        closest_level = None
+        closest_diff = float('inf')
+        closest_type = None
+        closest_direction = None
 
         # 1. PDH & PDL चेक
         prev_day = get_prev_day_high_low(symbol)
@@ -186,11 +180,13 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
             
             if (abs(current_price - pdh) <= tolerance) and not is_on_cooldown(f"PDH_{symbol}", now):
                 closest_level, closest_type = pdh, "PDH"
+                closest_direction = "UPWARDS"
 
             if (abs(current_price - pdl) <= tolerance) and not is_on_cooldown(f"PDL_{symbol}", now):
                 diff = abs(current_price - pdl)
                 if diff < closest_diff:
                     closest_level, closest_type = pdl, "PDL"
+                    closest_direction = "DOWNWARDS"
 
         # 2. Normal लेवल्स चेक
         if symbol in USER_KEY_LEVELS:
@@ -198,7 +194,10 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
                 if (abs(current_price - level) <= tolerance) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
                     diff = abs(current_price - level)
                     if diff < closest_diff:
-                        closest_diff, closest_level, closest_type = diff, level, "NORMAL"
+                        closest_diff = diff
+                        closest_level = level
+                        closest_type = "NORMAL"
+                        closest_direction = "⬆️ UP" if current_price >= level else "⬇️ DOWN"
         
         # 3. Major लेवल्स चेक
         if symbol in SPECIAL_LEVELS:
@@ -206,7 +205,10 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
                 if (abs(current_price - level) <= tolerance) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
                     diff = abs(current_price - level)
                     if diff < closest_diff:
-                        closest_diff, closest_level, closest_type = diff, level, "SPECIAL"
+                        closest_diff = diff
+                        closest_level = level
+                        closest_type = "SPECIAL"
+                        closest_direction = "⬆️ UP" if current_price >= level else "⬇️ DOWN"
 
         # अगर कोई लेवल मिला, तो सिर्फ 1 मैसेज भेजें
         if closest_level is not None:
@@ -215,9 +217,9 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
             elif closest_type == "PDL":
                 msg = f"🟢 *PREVIOUS DAY LOW (PDL) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDL Level:* `{closest_level:.5f}`\n💰 *Price:* `{current_price:.5f}`"
             elif closest_type == "NORMAL":
-                msg = f"🟢 *NORMAL LEVEL CROSSED*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{closest_level}`\n💰 *Price:* `{current_price:.5f}`"
+                msg = f"🟢 *NORMAL LEVEL CROSSED*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{closest_level}`\n💰 *Price:* `{current_price:.5f}`\n📉 *Dir:* {closest_direction}"
             else:
-                msg = f"🚨 *MAJOR LEVEL CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{closest_level}`\n💰 *Price:* `{current_price:.5f}`"
+                msg = f"🚨 *MAJOR LEVEL CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{closest_level}`\n💰 *Price:* `{current_price:.5f}`\n📉 *Dir:* {closest_direction}"
             
             await send_alert(context, msg)
             
@@ -226,7 +228,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
             elif closest_type == "NORMAL": LEVEL_ALERT_COOLDOWN[f"NORMAL_{symbol}_{closest_level}"] = now
             else: LEVEL_ALERT_COOLDOWN[f"SPECIAL_{symbol}_{closest_level}"] = now
 
-        await asyncio.sleep(4) 
+        await asyncio.sleep(2)
 
 # =========================================================
 # 7. TELEGRAM COMMANDS
@@ -235,7 +237,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TELEGRAM_CHAT_ID
     TELEGRAM_CHAT_ID = str(update.effective_chat.id)
     save_chat_id(TELEGRAM_CHAT_ID)
-    await update.message.reply_text("🚀 *Bot Online (Webhook)*\n✅ PDH/PDL Auto-Tracking Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
+    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ PDH/PDL Auto-Tracking Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
 
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
