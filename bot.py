@@ -42,9 +42,12 @@ def save_chat_id(chat_id):
 TELEGRAM_CHAT_ID = load_chat_id()
 
 # =========================================================
-# 2. BIQUOTE CLIENT
+# 2. BIQUOTE CLIENT & STATE MEMORY
 # =========================================================
 bq = Biquote()
+
+# 🧠 यह हमारी "मेमोरी" है जो हर पेयर का पिछला प्राइस याद रखेगी
+LAST_KNOWN_PRICE = {}
 
 # =========================================================
 # 3. KEY LEVELS & SYMBOL MAP
@@ -115,23 +118,19 @@ async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
     if not TELEGRAM_CHAT_ID: return
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
-        await asyncio.sleep(3) # Anti-spam delay
+        await asyncio.sleep(3) # Anti-spam delay (3 seconds)
     except Exception as e:
         logger.warning(f"Failed to send alert: {e}")
 
 def get_correct_symbol(symbol: str) -> str:
     return SYMBOL_MAP.get(symbol.upper(), symbol.upper())
 
-def get_precise_price_and_range(symbol: str) -> dict:
+def get_precise_price(symbol: str) -> float:
     try:
         sym = get_correct_symbol(symbol)
-        # सिर्फ पिछले 2 मिनट का डेटा (सबसे सटीक)
-        bars = bq.ohlc(sym, interval="1m", limit=2)
+        bars = bq.ohlc(sym, interval="1m", limit=1)
         if bars and len(bars) > 0:
-            current = float(bars[0]["close"])
-            high = max(float(b["high"]) for b in bars)
-            low = min(float(b["low"]) for b in bars)
-            return {"current": current, "high": high, "low": low}
+            return float(bars[0]["close"])
     except Exception as e:
         logger.warning(f"Biquote price error for {symbol}: {e}")
     return None
@@ -156,29 +155,34 @@ def is_on_cooldown(level_key, now):
     return False
 
 # =========================================================
-# 6. LEVEL CHECKING JOB (The Real Fix)
+# 6. LEVEL CHECKING JOB (With State Memory & Anti-Spam)
 # =========================================================
 async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("=== Checking Key Levels ===")
+    logger.info("=== Checking Key Levels (State Memory Logic) ===")
     now = datetime.now(timezone.utc)
     active_symbols = set(list(USER_KEY_LEVELS.keys()) + list(SPECIAL_LEVELS.keys()))
     
     for symbol in active_symbols:
-        price_data = get_precise_price_and_range(symbol)
-        if price_data is None:
+        current_price = get_precise_price(symbol)
+        if current_price is None:
             await asyncio.sleep(2)
             continue
-            
-        current_price = price_data["current"]
-        
-        # सख्त टॉलरेंस (Buffer): अगर प्राइस लेवल से दूर है, तो मैसेज नहीं जाएगा
-        if symbol in ["XAUUSD", "GOLD"]: buffer = 1.5
-        elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: buffer = 15.0
-        elif "JPY" in symbol: buffer = 0.05
-        else: buffer = 0.0002
+
+        # 🧠 मेमोरी से पिछला प्राइस निकालें
+        old_price = LAST_KNOWN_PRICE.get(symbol)
+
+        # अगर यह पहली बार चेक हो रहा है, तो सिर्फ मेमोरी सेव करें
+        if old_price is None:
+            LAST_KNOWN_PRICE[symbol] = current_price
+            continue
+
+        # Buffer (थोड़ी सी छूट ताकि छोटे-मोटे स्प्रेड से मैसेज न आए)
+        if symbol in ["XAUUSD", "GOLD"]: buffer = 0.5
+        elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: buffer = 5.0
+        elif "JPY" in symbol: buffer = 0.02
+        else: buffer = 0.0001
 
         closest_level = None
-        closest_diff = float('inf')
         closest_type = None
         closest_direction = None
 
@@ -187,45 +191,44 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         if prev_day:
             pdh, pdl = prev_day["pdh"], prev_day["pdl"]
             
-            # सिर्फ तभी ट्रिगर जब प्राइस लेवल के बिल्कुल करीब हो
-            if (abs(current_price - pdh) <= buffer) and not is_on_cooldown(f"PDH_{symbol}", now):
+            if old_price > pdl and current_price <= (pdl + buffer) and not is_on_cooldown(f"PDL_{symbol}", now):
+                closest_level, closest_type = pdl, "PDL"
+                closest_direction = "DOWNWARDS"
+            
+            elif old_price < pdh and current_price >= (pdh - buffer) and not is_on_cooldown(f"PDH_{symbol}", now):
                 closest_level, closest_type = pdh, "PDH"
                 closest_direction = "UPWARDS"
-
-            if (abs(current_price - pdl) <= buffer) and not is_on_cooldown(f"PDL_{symbol}", now):
-                diff = abs(current_price - pdl)
-                if diff < closest_diff:
-                    closest_level, closest_type = pdl, "PDL"
-                    closest_direction = "DOWNWARDS"
 
         # 2. Normal लेवल्स चेक
         if symbol in USER_KEY_LEVELS:
             for level in USER_KEY_LEVELS[symbol]:
-                if (abs(current_price - level) <= buffer) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
-                    diff = abs(current_price - level)
-                    if diff < closest_diff:
-                        closest_diff = diff
-                        closest_level = level
-                        closest_type = "NORMAL"
-                        closest_direction = "⬆️ UP" if current_price >= level else "⬇️ DOWN"
+                if old_price > level and current_price <= (level + buffer) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
+                    closest_level, closest_type = level, "NORMAL"
+                    closest_direction = "⬇️ DOWN"
+                    break
+                elif old_price < level and current_price >= (level - buffer) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
+                    closest_level, closest_type = level, "NORMAL"
+                    closest_direction = "⬆️ UP"
+                    break
         
         # 3. Major लेवल्स चेक
         if symbol in SPECIAL_LEVELS:
             for level in SPECIAL_LEVELS[symbol]:
-                if (abs(current_price - level) <= buffer) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
-                    diff = abs(current_price - level)
-                    if diff < closest_diff:
-                        closest_diff = diff
-                        closest_level = level
-                        closest_type = "SPECIAL"
-                        closest_direction = "⬆️ UP" if current_price >= level else "⬇️ DOWN"
+                if old_price > level and current_price <= (level + buffer) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
+                    closest_level, closest_type = level, "SPECIAL"
+                    closest_direction = "⬇️ DOWN"
+                    break
+                elif old_price < level and current_price >= (level - buffer) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
+                    closest_level, closest_type = level, "SPECIAL"
+                    closest_direction = "⬆️ UP"
+                    break
 
-        # अगर कोई लेवल मिला, तो मैसेज भेजें
+        # मैसेज भेजें (अगर कोई लेवल क्रॉस हुआ है)
         if closest_level is not None:
-            if closest_type == "PDH":
-                msg = f"🔴 *PREVIOUS DAY HIGH (PDH) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDH Level:* `{closest_level:.5f}`\n💰 *Price:* `{current_price:.5f}`"
-            elif closest_type == "PDL":
+            if closest_type == "PDL":
                 msg = f"🟢 *PREVIOUS DAY LOW (PDL) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDL Level:* `{closest_level:.5f}`\n💰 *Price:* `{current_price:.5f}`"
+            elif closest_type == "PDH":
+                msg = f"🔴 *PREVIOUS DAY HIGH (PDH) CROSSED!*\n📊 *Asset:* {symbol}\n🎯 *PDH Level:* `{closest_level:.5f}`\n💰 *Price:* `{current_price:.5f}`"
             elif closest_type == "NORMAL":
                 msg = f"🟢 *NORMAL LEVEL CROSSED*\n📊 *Asset:* {symbol}\n🎯 *Level:* `{closest_level}`\n💰 *Price:* `{current_price:.5f}`\n📉 *Dir:* {closest_direction}"
             else:
@@ -238,6 +241,8 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
             elif closest_type == "NORMAL": LEVEL_ALERT_COOLDOWN[f"NORMAL_{symbol}_{closest_level}"] = now
             else: LEVEL_ALERT_COOLDOWN[f"SPECIAL_{symbol}_{closest_level}"] = now
 
+        # 🧠 नए प्राइस को मेमोरी में सेव करें (अगली बार के लिए)
+        LAST_KNOWN_PRICE[symbol] = current_price
         await asyncio.sleep(2)
 
 # =========================================================
@@ -247,7 +252,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TELEGRAM_CHAT_ID
     TELEGRAM_CHAT_ID = str(update.effective_chat.id)
     save_chat_id(TELEGRAM_CHAT_ID)
-    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ Strict Trigger Logic Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
+    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ State Memory Logic Active (क्रॉसिंग सटीक पकड़ेगा)\nChat ID सेव हो गई है।", parse_mode="Markdown")
 
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
