@@ -6,7 +6,6 @@ import base64
 import logging
 import threading
 import time
-import asyncio
 import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask
@@ -182,6 +181,11 @@ flask_app = Flask(__name__)
 def health():
     return "Suraj Sniper Multi-Asset Bot Online 200 OK", 200
 
+def run_flask_thread():
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"Flask Web Server Port {port} पर बाइंड हो रहा है...")
+    flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
 # =========================================================
 # 5. GEMINI AI VISION
 # =========================================================
@@ -240,7 +244,7 @@ def background_price_watcher():
 
                 now = time.time()
 
-                # --- 1. PDH / PDL चेक ---
+                # 1. PDH / PDL चेक
                 prev_day = get_prev_day_high_low(sym)
                 if prev_day:
                     pdh = prev_day["pdh"]
@@ -278,7 +282,7 @@ def background_price_watcher():
                             )
                             LEVEL_ALERT_COOLDOWN[alert_key_pdl] = now
 
-                # --- 2. मेजर लेवल्स चेक ---
+                # 2. मेजर लेवल्स
                 for lvl in SPECIAL_LEVELS.get(sym, []):
                     alert_key = f"SPECIAL_{sym}_{lvl}"
                     if now - LEVEL_ALERT_COOLDOWN.get(alert_key, 0) < COOLDOWN_SECONDS:
@@ -312,7 +316,7 @@ def background_price_watcher():
                         )
                         LEVEL_ALERT_COOLDOWN[alert_key] = now
 
-                # --- 3. नॉर्मल की-लेवल्स चेक ---
+                # 3. नॉर्मल की-लेवल्स
                 for lvl in USER_KEY_LEVELS.get(sym, []):
                     alert_key = f"NORMAL_{sym}_{lvl}"
                     if now - LEVEL_ALERT_COOLDOWN.get(alert_key, 0) < COOLDOWN_SECONDS:
@@ -492,17 +496,30 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"इमेज स्कैन एरर: {e}")
 
 # =========================================================
-# 8. TELEGRAM BOT THREAD RUNNER (Loop Fix)
+# 8. मुख्य प्रोसेस (Main Thread पर Telegram Engine)
 # =========================================================
-def run_telegram_polling():
+def main():
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN नहीं मिला!")
         return
 
-    # थ्रेड के अंदर नया Event Loop सेट करना (RuntimeError फिक्स)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # 1. बैकग्राउंड में Flask वेब सर्वर चलाएं (Port 10000 - Render Health Check)
+    t_flask = threading.Thread(target=run_flask_thread, daemon=True)
+    t_flask.start()
 
+    # 2. बैकग्राउंड में लेवल ट्रैकर चलाएं
+    t_watcher = threading.Thread(target=background_price_watcher, daemon=True)
+    t_watcher.start()
+
+    # 3. पुराने फँसे Webhook को साफ़ करें
+    try:
+        del_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
+        r = requests.get(del_url, timeout=10)
+        logger.info(f"Webhook Cleanup Status: {r.text}")
+    except Exception as e:
+        logger.warning(f"Webhook cleanup warning: {e}")
+
+    # 4. मुख्य थ्रेड (Main Thread) पर Telegram Bot चलाएं (Signal Handler एरर खत्म)
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_cmd))
@@ -513,22 +530,8 @@ def run_telegram_polling():
     app.add_handler(CommandHandler("clearlevels", clear_levels_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    logger.info("=== Telegram Polling इंजन सफलता से चालू हो गया है ===")
+    logger.info("=== Telegram Bot मुख्य थ्रेड पर सफलता से चालू हो गया है ===")
     app.run_polling(drop_pending_updates=True)
-
-# =========================================================
-# 9. मुख्य प्रोसेस
-# =========================================================
-def main():
-    t_bot = threading.Thread(target=run_telegram_polling, daemon=True)
-    t_bot.start()
-
-    t_watcher = threading.Thread(target=background_price_watcher, daemon=True)
-    t_watcher.start()
-
-    port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Flask Web Server Port {port} पर चल रहा है...")
-    flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 if __name__ == "__main__":
     main()
