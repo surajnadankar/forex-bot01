@@ -49,7 +49,6 @@ bq = Biquote()
 # =========================================================
 # 3. KEY LEVELS & SYMBOL MAP
 # =========================================================
-# Biquote के लिए सिंबल मैप
 SYMBOL_MAP = {
     "GOLD": "XAUUSD",
     "SILVER": "XAGUSD",
@@ -116,6 +115,8 @@ async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
     if not TELEGRAM_CHAT_ID: return
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
+        # 🛑 स्पैम रोकने के लिए हर मैसेज के बाद 3 सेकंड का ब्रेक
+        await asyncio.sleep(3) 
     except Exception as e:
         logger.warning(f"Failed to send alert: {e}")
 
@@ -172,16 +173,10 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         recent_high = price_data["high"]
         recent_low = price_data["low"]
 
-        # 🎯 बफर सेटिंग (Buffer Setting)
-        # ताकि ब्रोकर और TradingView के प्राइस में फर्क होने पर भी अलर्ट मिस न हो
-        if symbol in ["XAUUSD", "GOLD"]: 
-            buffer = 2.0  # गोल्ड के लिए 2 डॉलर का बफर
-        elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: 
-            buffer = 20.0 # इंडेक्स और BTC के लिए
-        elif "JPY" in symbol: 
-            buffer = 0.08 # JPY के लिए
-        else: 
-            buffer = 0.0003 # फॉरेक्स के लिए
+        if symbol in ["XAUUSD", "GOLD"]: buffer = 2.0
+        elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: buffer = 20.0
+        elif "JPY" in symbol: buffer = 0.08
+        else: buffer = 0.0003
 
         closest_level = None
         closest_diff = float('inf')
@@ -247,7 +242,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
             elif closest_type == "NORMAL": LEVEL_ALERT_COOLDOWN[f"NORMAL_{symbol}_{closest_level}"] = now
             else: LEVEL_ALERT_COOLDOWN[f"SPECIAL_{symbol}_{closest_level}"] = now
 
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(2)
 
 # =========================================================
 # 7. TELEGRAM COMMANDS
@@ -256,16 +251,14 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TELEGRAM_CHAT_ID
     TELEGRAM_CHAT_ID = str(update.effective_chat.id)
     save_chat_id(TELEGRAM_CHAT_ID)
-    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ Smart Trigger Logic + Buffer Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
+    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ Smart Trigger + Anti-Spam Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
 
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         args = context.args
         symbol = args[0].upper()
         price = float(args[1])
-        
         if symbol == "GOLD": symbol = "XAUUSD"
-        
         if symbol not in USER_KEY_LEVELS: USER_KEY_LEVELS[symbol] = []
         USER_KEY_LEVELS[symbol].append(price)
         await update.message.reply_text(f"✅ *{symbol}* में लेवल जुड़ गया: `{price}`", parse_mode="Markdown")
@@ -277,9 +270,7 @@ async def add_major_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         args = context.args
         symbol = args[0].upper()
         price = float(args[1])
-        
         if symbol == "GOLD": symbol = "XAUUSD"
-        
         if symbol not in SPECIAL_LEVELS: SPECIAL_LEVELS[symbol] = []
         SPECIAL_LEVELS[symbol].append(price)
         await update.message.reply_text(f"🚨 *{symbol}* में मेजर लेवल जुड़ गया: `{price}`", parse_mode="Markdown")
