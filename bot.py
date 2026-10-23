@@ -115,8 +115,7 @@ async def send_alert(context: ContextTypes.DEFAULT_TYPE, message: str):
     if not TELEGRAM_CHAT_ID: return
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
-        # 🛑 स्पैम रोकने के लिए हर मैसेज के बाद 3 सेकंड का ब्रेक
-        await asyncio.sleep(3) 
+        await asyncio.sleep(3) # Anti-spam delay
     except Exception as e:
         logger.warning(f"Failed to send alert: {e}")
 
@@ -126,7 +125,8 @@ def get_correct_symbol(symbol: str) -> str:
 def get_precise_price_and_range(symbol: str) -> dict:
     try:
         sym = get_correct_symbol(symbol)
-        bars = bq.ohlc(sym, interval="1m", limit=3)
+        # सिर्फ पिछले 2 मिनट का डेटा (सबसे सटीक)
+        bars = bq.ohlc(sym, interval="1m", limit=2)
         if bars and len(bars) > 0:
             current = float(bars[0]["close"])
             high = max(float(b["high"]) for b in bars)
@@ -156,7 +156,7 @@ def is_on_cooldown(level_key, now):
     return False
 
 # =========================================================
-# 6. LEVEL CHECKING JOB (Strict Logic - No False Alerts)
+# 6. LEVEL CHECKING JOB (The Real Fix)
 # =========================================================
 async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("=== Checking Key Levels ===")
@@ -170,14 +170,12 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
             continue
             
         current_price = price_data["current"]
-        recent_high = price_data["high"]
-        recent_low = price_data["low"]
-
-        # Buffer: लेवल के बिल्कुल करीब आने पर ट्रिगर होगा
-        if symbol in ["XAUUSD", "GOLD"]: buffer = 2.0
-        elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: buffer = 20.0
-        elif "JPY" in symbol: buffer = 0.08
-        else: buffer = 0.0003
+        
+        # सख्त टॉलरेंस (Buffer): अगर प्राइस लेवल से दूर है, तो मैसेज नहीं जाएगा
+        if symbol in ["XAUUSD", "GOLD"]: buffer = 1.5
+        elif symbol in ["BTCUSD", "US30", "NAS100", "DAX40", "UK100"]: buffer = 15.0
+        elif "JPY" in symbol: buffer = 0.05
+        else: buffer = 0.0002
 
         closest_level = None
         closest_diff = float('inf')
@@ -189,24 +187,21 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         if prev_day:
             pdh, pdl = prev_day["pdh"], prev_day["pdl"]
             
-            # अगर प्राइस PDH के बहुत करीब है या उसने उसे छुआ है
-            if (abs(current_price - pdh) <= buffer or recent_high >= pdh) and not is_on_cooldown(f"PDH_{symbol}", now):
+            # सिर्फ तभी ट्रिगर जब प्राइस लेवल के बिल्कुल करीब हो
+            if (abs(current_price - pdh) <= buffer) and not is_on_cooldown(f"PDH_{symbol}", now):
                 closest_level, closest_type = pdh, "PDH"
                 closest_direction = "UPWARDS"
 
-            # अगर प्राइस PDL के बहुत करीब है या उसने उसे छुआ है
-            if (abs(current_price - pdl) <= buffer or recent_low <= pdl) and not is_on_cooldown(f"PDL_{symbol}", now):
+            if (abs(current_price - pdl) <= buffer) and not is_on_cooldown(f"PDL_{symbol}", now):
                 diff = abs(current_price - pdl)
                 if diff < closest_diff:
-                    closest_diff = diff
                     closest_level, closest_type = pdl, "PDL"
                     closest_direction = "DOWNWARDS"
 
         # 2. Normal लेवल्स चेक
         if symbol in USER_KEY_LEVELS:
             for level in USER_KEY_LEVELS[symbol]:
-                # अगर प्राइस लेवल के करीब है, या उसने उसे छुआ है
-                if (abs(current_price - level) <= buffer or recent_high >= level or recent_low <= level) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
+                if (abs(current_price - level) <= buffer) and not is_on_cooldown(f"NORMAL_{symbol}_{level}", now):
                     diff = abs(current_price - level)
                     if diff < closest_diff:
                         closest_diff = diff
@@ -217,7 +212,7 @@ async def check_key_levels_job(context: ContextTypes.DEFAULT_TYPE):
         # 3. Major लेवल्स चेक
         if symbol in SPECIAL_LEVELS:
             for level in SPECIAL_LEVELS[symbol]:
-                if (abs(current_price - level) <= buffer or recent_high >= level or recent_low <= level) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
+                if (abs(current_price - level) <= buffer) and not is_on_cooldown(f"SPECIAL_{symbol}_{level}", now):
                     diff = abs(current_price - level)
                     if diff < closest_diff:
                         closest_diff = diff
@@ -252,7 +247,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TELEGRAM_CHAT_ID
     TELEGRAM_CHAT_ID = str(update.effective_chat.id)
     save_chat_id(TELEGRAM_CHAT_ID)
-    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ Strict Logic + Anti-Spam Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
+    await update.message.reply_text("🚀 *Bot Online (Biquote - MT5 Feed)*\n✅ Strict Trigger Logic Active\nChat ID सेव हो गई है।", parse_mode="Markdown")
 
 async def add_normal_level_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
